@@ -1,217 +1,139 @@
 import os
-import sys
 import asyncio
-import logging
-from telegram import Update, InlineKeyboardMarkup, InlineKeyboardButton
-from telegram.ext import (
-    Application, CommandHandler, MessageHandler, CallbackQueryHandler,
-    filters, ContextTypes
-)
+from pyrogram import Client, filters
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
+from pyrogram.enums import ParseMode
 
-# ===================
-# Config (from ENV)
-# ===================
+# --- Config from ENV ---
+API_ID = int(os.getenv("API_ID", ""))
+API_HASH = os.getenv("API_HASH")
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-OWNER_ID = int(os.getenv("OWNER_ID", 0))
+OWNER_ID = int(os.getenv("OWNER_ID", ""))
 
-# ===================
-# Memory storage
-# ===================
-user_thumbs = {}   # user_id: photo_file_id
-users_list = set() # track all users
+# --- Setup ---
+os.makedirs("downloads", exist_ok=True)
+app = Client("cover-bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
 
-# ===================
-# Commands
-# ===================
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    users_list.add(update.effective_user.id)
-    await update.message.reply_text(
-        f"Hi {update.effective_user.mention_html()}!\n\n"
-        "Welcome to 🎬 <b>Video Cover/Thumbnail Bot.</b>\n\n"
-        "- Add a custom cover/thumbnail to your videos instantly!\n\n"
-        "<b>How it works 🤔</b>\n"
-        "1️⃣ Send your photo (cover/thumbnail).\n"
-        "2️⃣ Send your video, and the bot will add the cover automatically.\n\n"
+# --- Start ---
+@app.on_message(filters.command("start"))
+async def start_cmd(client, message: Message):
+    await message.reply(
+        "🎬 **Video Cover/Thumbnail Bot**\n\n"
+        "1. Send a photo (cover/thumbnail).\n"
+        "2. Send a video, and I’ll add your cover automatically.\n\n"
         "✶ Commands:\n"
-        "/show_cover - View your current cover\n"
-        "/del_cover - Delete your saved cover\n"
-        "/ping - Check bot status\n\n"
-        "👉 Use this bot to give your videos HD thumbnails before sharing!\n"
-        " • Powered By: @World_Fastest_Bots",
-        parse_mode="HTML"
+        "`/show_cover` - View your cover\n"
+        "`/del_cover` - Delete your cover\n"
+        "`/ping` - Check bot status\n"
+        "~ @World_Fastest_Bots
     )
 
 
-async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("✅ Pong! Bot is alive.")
+# --- Save Thumbnail ---
+@app.on_message(filters.photo)
+async def save_thumb(client, message: Message):
+    user_id = str(message.from_user.id)
+    path = f"downloads/{user_id}.jpg"
+    await message.download(path)
+    await message.reply("✅ Thumbnail saved!")
 
 
-async def save_thumb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    user_thumbs[user_id] = update.message.photo[-1].file_id
-    users_list.add(user_id)
-    await update.message.reply_text("✅ Your thumbnail has been saved! Now send me a video.")
-
-
-async def show_thumb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id not in user_thumbs:
-        return await update.message.reply_text("❌ You don’t have any saved thumbnail.")
-
-    await update.message.reply_photo(
-        user_thumbs[user_id],
-        caption="🎬 Your current saved thumbnail.",
-        reply_markup=InlineKeyboardMarkup(
-            [[InlineKeyboardButton("Delete Cover ❌", callback_data="del_cover")]]
+# --- Show Thumbnail ---
+@app.on_message(filters.command("show_cover"))
+async def show_cover(client, message: Message):
+    user_id = str(message.from_user.id)
+    path = f"downloads/{user_id}.jpg"
+    if os.path.exists(path):
+        btn = InlineKeyboardMarkup(
+            [[InlineKeyboardButton("❌ Delete Cover", callback_data="delcover")]]
         )
-    )
-
-
-async def del_thumb(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    if user_id in user_thumbs:
-        del user_thumbs[user_id]
-        await update.message.reply_text("🗑️ Thumbnail deleted successfully!")
+        await message.reply_photo(path, caption="📌 Your saved cover:", reply_markup=btn)
     else:
-        await update.message.reply_text("❌ You don’t have any saved thumbnail.")
+        await message.reply("❌ No cover found. Send a photo to save one.")
 
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-    user_id = query.from_user.id
-
-    if query.data == "del_cover":
-        if user_id in user_thumbs:
-            del user_thumbs[user_id]
-            await query.edit_message_caption("🗑️ Thumbnail deleted successfully!")
-        else:
-            await query.answer("❌ No thumbnail found.", show_alert=True)
-
-
-async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = update.effective_user.id
-    users_list.add(user_id)
-
-    if user_id not in user_thumbs:
-        return await update.message.reply_text("⚠️ You haven’t set any thumbnail.\n\nSend me a photo first!")
-
-    thumb_id = user_thumbs[user_id]
-
-    caption = f"<b>{update.message.caption}</b>" if update.message.caption else "<b> </b>"
-
-    await update.message.reply_video(
-        video=update.message.video.file_id,
-        thumb=thumb_id,
-        caption=caption,
-        parse_mode="HTML"
-    )
+# --- Delete Thumbnail ---
+@app.on_message(filters.command("del_cover"))
+async def del_cover(client, message: Message):
+    user_id = str(message.from_user.id)
+    path = f"downloads/{user_id}.jpg"
+    if os.path.exists(path):
+        os.remove(path)
+        await message.reply("🗑️ Thumbnail deleted.")
+    else:
+        await message.reply("❌ No cover to delete.")
 
 
-# ===================
-# Owner-only helpers
-# ===================
-
-def owner_only(func):
-    async def wrapper(update: Update, context: ContextTypes.DEFAULT_TYPE):
-        if update.effective_user.id != OWNER_ID:
-            return await update.message.reply_text("⛔ This command is for the owner only.")
-        return await func(update, context)
-    return wrapper
-
-
-@owner_only
-async def users(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(f"👥 Total Users: <b>{len(users_list)}</b>", parse_mode="HTML")
+# --- Button Delete Cover ---
+@app.on_callback_query(filters.regex("delcover"))
+async def cb_delcover(client, callback_query):
+    user_id = str(callback_query.from_user.id)
+    path = f"downloads/{user_id}.jpg"
+    if os.path.exists(path):
+        os.remove(path)
+        await callback_query.message.edit_caption("🗑️ Thumbnail deleted.")
+    else:
+        await callback_query.answer("❌ No cover found.", show_alert=True)
 
 
-@owner_only
-async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        f"📊 <b>Bot Stats:</b>\n\n"
-        f"👥 Users: {len(users_list)}\n"
-        f"🖼️ Thumbnails Saved: {len(user_thumbs)}",
-        parse_mode="HTML"
-    )
+# --- Video/Doc Processing ---
+@app.on_message(filters.video | filters.document)
+async def process_media(client, message: Message):
+    user_id = str(message.from_user.id)
+    thumb_path = f"downloads/{user_id}.jpg"
+    caption = f"**{message.caption or ''}**"
+
+    if os.path.exists(thumb_path):
+        media = message.video or message.document
+        await message.reply_document(
+            document=media.file_id,
+            thumb=thumb_path,
+            caption=caption,
+            parse_mode=ParseMode.MARKDOWN
+        )
+    else:
+        await message.reply("⚠️ No custom thumbnail set. Send a photo first.")
 
 
-@owner_only
-async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not update.message.reply_to_message:
-        return await update.message.reply_text("⚠️ Reply to a message to broadcast it.")
-
-    sent, failed = 0, 0
-    for user in list(users_list):
-        try:
-            await update.message.reply_to_message.copy(user)
-            sent += 1
-        except:
-            failed += 1
-        await asyncio.sleep(0.1)
-
-    await update.message.reply_text(f"📢 Broadcast finished!\n✅ Sent: {sent}\n❌ Failed: {failed}")
+# --- Ping ---
+@app.on_message(filters.command("ping"))
+async def ping_cmd(client, message: Message):
+    await message.reply("🏓 Pong! Bot is alive.")
 
 
-@owner_only
-async def dbroadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if len(context.args) < 1 or not update.message.reply_to_message:
-        return await update.message.reply_text("⚠️ Usage: /dbroadcast <seconds> (reply to a message)")
+# --- Timed Broadcast (Owner only) ---
+@app.on_message(filters.command("dbroadcast") & filters.user(OWNER_ID))
+async def dbroadcast_cmd(client, message: Message):
+    args = message.text.split(maxsplit=1)
+    if len(args) < 2 or not message.reply_to_message:
+        return await message.reply("Usage: `/dbroadcast <seconds>` (reply to a message)", parse_mode=ParseMode.MARKDOWN)
 
     try:
-        duration = int(context.args[0])
-    except:
-        return await update.message.reply_text("❌ Invalid time. Use numbers only.")
+        seconds = int(args[1])
+    except ValueError:
+        return await message.reply("❌ Invalid time. Use numbers only.")
 
-    sent = 0
-    for user in list(users_list):
+    # Send broadcast to all chats the bot is in
+    sent_msg = []
+    async for dialog in app.get_dialogs():
         try:
-            m = await update.message.reply_to_message.copy(user)
-            context.job_queue.run_once(lambda _: m.delete(), duration)
-            sent += 1
+            m = await message.reply_to_message.copy(dialog.chat.id)
+            sent_msg.append((dialog.chat.id, m.id))
         except:
             pass
-        await asyncio.sleep(0.1)
 
-    await update.message.reply_text(f"📢 Timed broadcast sent to {sent} users. Auto-deletes after {duration} sec.")
+    await message.reply(f"✅ Broadcast sent to {len(sent_msg)} chats. Auto-delete in {seconds} sec.")
 
+    await asyncio.sleep(seconds)
 
-@owner_only
-async def restart(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🔄 Restarting...")
-    os.execl(sys.executable, sys.executable, *sys.argv)
-
-
-# ===================
-# Main
-# ===================
-
-def main():
-    app = Application.builder().token(BOT_TOKEN).build()
-
-    # User commands
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("ping", ping))
-    app.add_handler(CommandHandler("show_cover", show_thumb))
-    app.add_handler(CommandHandler("del_cover", del_thumb))
-
-    app.add_handler(MessageHandler(filters.PHOTO, save_thumb))
-    app.add_handler(MessageHandler(filters.VIDEO, handle_video))
-    app.add_handler(CallbackQueryHandler(button_handler))
-
-    # Owner only
-    app.add_handler(CommandHandler("users", users))
-    app.add_handler(CommandHandler("stats", stats))
-    app.add_handler(CommandHandler("broadcast", broadcast))
-    app.add_handler(CommandHandler("dbroadcast", dbroadcast))
-    app.add_handler(CommandHandler("restart", restart))
-
-    print("🤖 Video Thumbnail Bot is running...")
-    app.run_polling()
+    # Delete messages
+    for chat_id, msg_id in sent_msg:
+        try:
+            await app.delete_messages(chat_id, msg_id)
+        except:
+            pass
 
 
-if __name__ == "__main__":
-    main()
+print("✅ Bot started...")
+app.run()
