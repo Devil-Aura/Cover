@@ -1,6 +1,5 @@
-import asyncio
 import os
-import sys
+import asyncio
 import time
 from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
@@ -10,20 +9,18 @@ from pyrogram.enums import ParseMode
 API_ID =   
 API_HASH = ""  
 BOT_TOKEN = ""  
-OWNER_ID =   
+OWNER_ID =  
 app = Client("video_thumb_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# --- Store thumbnails & users in memory ---
-user_thumbs = {}
-all_users = set()
+# --- Store data in memory ---
+user_thumbs = {}  # user_id: photo_file_id
+users_list = set()  # track all users
 
 
 # --- Start Command ---
 @app.on_message(filters.command("start"))
 async def start_cmd(_, msg: Message):
-    user_id = msg.from_user.id
-    all_users.add(user_id)
-
+    users_list.add(msg.from_user.id)
     await msg.reply_text(
         f"Hi {msg.from_user.mention}!\n\n"
         "Welcome to 🎬 **Video Cover/Thumbnail Bot.**\n\n"
@@ -36,16 +33,25 @@ async def start_cmd(_, msg: Message):
         "/del_cover - Delete your saved cover\n"
         "/ping - Check bot status\n\n"
         "👉 Use this bot to give your videos HD thumbnails before sharing!\n"
-        " • Powered By : @World_Fastest_Bots."
+        " • Powered By: @World_Fastest_Bots"
     )
+
+
+# --- Ping Command (for everyone) ---
+@app.on_message(filters.command("ping"))
+async def ping_cmd(_, msg: Message):
+    start = time.time()
+    m = await msg.reply_text("🏓 Pinging...")
+    end = time.time()
+    await m.edit_text(f"✅ Pong! `{round((end - start) * 1000)} ms`")
 
 
 # --- Save Thumbnail ---
 @app.on_message(filters.photo)
 async def save_thumb(_, msg: Message):
     user_id = msg.from_user.id
-    all_users.add(user_id)
     user_thumbs[user_id] = msg.photo.file_id
+    users_list.add(user_id)
     await msg.reply_text("✅ Your thumbnail has been saved! Now send me a video.")
 
 
@@ -91,133 +97,122 @@ async def delete_thumb_button(_, query):
 @app.on_message(filters.video)
 async def apply_thumb(_, msg: Message):
     user_id = msg.from_user.id
-    all_users.add(user_id)
+    users_list.add(user_id)
 
     if user_id not in user_thumbs:
         return await msg.reply_text("⚠️ You haven’t set any thumbnail.\n\nSend me a photo first!")
 
     thumb_id = user_thumbs[user_id]
 
-    # Handle caption safely
-    caption = msg.caption or ""
-    if caption.startswith("**") and caption.endswith("**"):
-        final_caption = caption  # already bold
-    elif caption.strip():
-        final_caption = f"**{caption}**"
-    else:
-        final_caption = "** **"  # empty bold caption
+    # Download video and thumbnail
+    video_path = await msg.download()
+    thumb_path = await app.download_media(thumb_id)
 
+    # Caption in bold if exists
+    if msg.caption:
+        caption = f"**{msg.caption}**"
+    else:
+        caption = "** **"
+
+    # Re-upload with custom thumbnail
     await msg.reply_video(
-        msg.video.file_id,
-        thumb=thumb_id,
-        caption=final_caption,
+        video=video_path,
+        thumb=thumb_path,
+        caption=caption,
         parse_mode=ParseMode.MARKDOWN
     )
 
-
-# =========================
-#       GENERAL COMMANDS
-# =========================
-
-# --- Ping (everyone can use) ---
-@app.on_message(filters.command("ping"))
-async def ping_cmd(_, msg: Message):
-    start = time.time()
-    reply = await msg.reply_text("🏓 Pinging...")
-    end = time.time()
-    await reply.edit_text(f"🏓 Pong! `{round((end - start) * 1000)}ms`")
+    # Cleanup
+    try:
+        os.remove(video_path)
+        os.remove(thumb_path)
+    except:
+        pass
 
 
-# =========================
-#       OWNER COMMANDS
-# =========================
+# ============================
+# --- Owner Only Commands ---
+# ============================
 
-def owner_only(func):
+def is_owner(func):
     async def wrapper(client, msg: Message):
         if msg.from_user.id != OWNER_ID:
-            return await msg.reply_text("❌ You are not authorized to use this command.")
+            return await msg.reply_text("⛔ This command is for the owner only.")
         return await func(client, msg)
     return wrapper
 
 
-# --- Users ---
 @app.on_message(filters.command("users"))
-@owner_only
-async def users_cmd(_, msg: Message):
-    await msg.reply_text(f"👥 Total users: `{len(all_users)}`")
+@is_owner
+async def get_users(_, msg: Message):
+    await msg.reply_text(f"👥 Total Users: **{len(users_list)}**")
 
 
-# --- Stats ---
 @app.on_message(filters.command("stats"))
-@owner_only
+@is_owner
 async def stats_cmd(_, msg: Message):
-    thumbs_count = len(user_thumbs)
-    users_count = len(all_users)
     await msg.reply_text(
         f"📊 **Bot Stats:**\n\n"
-        f"👥 Total Users: `{users_count}`\n"
-        f"🖼️ Users with Thumbnails: `{thumbs_count}`"
+        f"👥 Users: {len(users_list)}\n"
+        f"🖼️ Thumbnails Saved: {len(user_thumbs)}"
     )
 
 
-# --- Broadcast ---
 @app.on_message(filters.command("broadcast"))
-@owner_only
+@is_owner
 async def broadcast_cmd(_, msg: Message):
     if not msg.reply_to_message:
-        return await msg.reply_text("⚠️ Reply to a message to broadcast.")
-    
-    sent = 0
-    failed = 0
-    for user in list(all_users):
+        return await msg.reply_text("⚠️ Reply to a message to broadcast it.")
+
+    sent, failed = 0, 0
+    for user in list(users_list):
         try:
             await msg.reply_to_message.copy(user)
             sent += 1
-        except Exception:
+        except:
             failed += 1
-    await msg.reply_text(f"📢 Broadcast done.\n✅ Sent: {sent}\n❌ Failed: {failed}")
+        await asyncio.sleep(0.1)
+
+    await msg.reply_text(f"📢 Broadcast finished!\n✅ Sent: {sent}\n❌ Failed: {failed}")
 
 
-# --- Timed Broadcast (Delete After X Seconds) ---
 @app.on_message(filters.command("dbroadcast"))
-@owner_only
+@is_owner
 async def dbroadcast_cmd(_, msg: Message):
-    if not msg.reply_to_message:
-        return await msg.reply_text("⚠️ Reply to a message to broadcast with delete timer.\n\nUsage: `/dbroadcast 30`")
-    
+    if len(msg.command) < 2 or not msg.reply_to_message:
+        return await msg.reply_text("⚠️ Usage: `/dbroadcast <seconds>` (reply to a message).", parse_mode="markdown")
+
     try:
-        seconds = int(msg.text.split(maxsplit=1)[1])
-    except Exception:
-        return await msg.reply_text("⚠️ Invalid usage.\n\nExample: `/dbroadcast 30` (auto delete in 30s)")
+        duration = int(msg.command[1])
+    except:
+        return await msg.reply_text("❌ Invalid time. Use numbers only.")
 
     sent = 0
-    failed = 0
-    for user in list(all_users):
+    for user in list(users_list):
         try:
-            sent_msg = await msg.reply_to_message.copy(user)
+            m = await msg.reply_to_message.copy(user)
+            asyncio.create_task(delete_after(m, duration))
             sent += 1
-            # schedule deletion
-            asyncio.create_task(delete_after(sent_msg, seconds))
-        except Exception:
-            failed += 1
+        except:
+            pass
+        await asyncio.sleep(0.1)
 
-    await msg.reply_text(f"📢 Timed Broadcast done.\n✅ Sent: {sent}\n❌ Failed: {failed}\n🕒 Auto delete after {seconds}s")
+    await msg.reply_text(f"📢 Timed broadcast sent to {sent} users. Auto-deletes after {duration} sec.")
 
 
 async def delete_after(message: Message, delay: int):
     await asyncio.sleep(delay)
     try:
         await message.delete()
-    except Exception:
+    except:
         pass
 
 
-# --- Restart ---
 @app.on_message(filters.command("restart"))
-@owner_only
+@is_owner
 async def restart_cmd(_, msg: Message):
-    await msg.reply_text("♻️ Restarting bot...")
-    os.execv(sys.executable, ["python"] + sys.argv)
+    await msg.reply_text("🔄 Restarting...")
+    os.execl(sys.executable, sys.executable, *sys.argv)
 
 
 print("🤖 Video Thumbnail Bot is running...")
