@@ -9,9 +9,8 @@ from pyrogram.enums import ParseMode
 # --- Bot Config ---
 API_ID =   
 API_HASH = ""  
-BOT_TOKEN = ""  # Replace with your Bot Token
-OWNER_ID =   # Replace with your Telegram User ID
-
+BOT_TOKEN = ""  
+OWNER_ID =   
 app = Client("video_thumb_bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
 # --- Store thumbnails & users in memory ---
@@ -37,7 +36,7 @@ async def start_cmd(_, msg: Message):
         "/del_cover - Delete your saved cover\n"
         "/ping - Check bot status\n\n"
         "👉 Use this bot to give your videos HD thumbnails before sharing!\n"
-        " • 𝗣𝗼𝘄𝗲𝗿𝗲𝗱 𝗕𝘆: @World_Fastest_Bots."
+        " • Powered By : @World_Fastest_Bots."
     )
 
 
