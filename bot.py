@@ -1,104 +1,238 @@
 import os
-import json
-import logging
-from telegram import Update, InputFile
-from telegram.ext import (
-    Application, CommandHandler, MessageHandler, filters, ContextTypes
-)
-from telegram.error import TelegramError
+import sys
+import time
+import asyncio
+from pyrogram import Client, filters
+from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "")  # Set via environment variable
-DATA_FILE = "user_data.json"
+# ================= CONFIG =================
+API_ID = 22768311
+API_HASH = "702d8884f48b42e865425391432b3794"
+BOT_TOKEN = "8201239010:AAHPS8LY5CfCyYoxd4-HQB7AAiwgM57l--Y"
+OWNER_ID = 6040503076
+FORCE_CHANNEL = -1002432405855  # Force sub channel ID
 
-logging.basicConfig(level=logging.INFO, filename="bot.log")
-logger = logging.getLogger(__name__)
+# Memory data (reset after restart)
+admins = [OWNER_ID]
+thumbs = {}      # user_id: path
+chats = set()    # chats for broadcast
+users = set()    # all unique users
 
-# ---------------- Data Handling ----------------
-def load_user_data():
-    if os.path.exists(DATA_FILE):
-        with open(DATA_FILE, "r") as f:
-            return json.load(f)
-    return {}
+# Init Bot
+app = Client("cover-bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-def save_user_data(data):
-    with open(DATA_FILE, "w") as f:
-        json.dump(data, f, indent=2)
+# ================= HELPERS =================
+async def check_force_sub(client, user_id):
+    try:
+        member = await client.get_chat_member(FORCE_CHANNEL, user_id)
+        if member.status in ["member", "administrator", "creator"]:
+            return True
+    except:
+        return False
+    return False
 
-user_data = load_user_data()
 
-# ---------------- Commands ----------------
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "🎬 Welcome to Video Thumbnail Bot!\n\n"
-        "1️⃣ Send a photo to save as your thumbnail.\n"
-        "2️⃣ Send a video, and I’ll re-send it with that thumbnail.\n\n"
-        "Commands:\n"
-        "/show_cover - Show current thumbnail\n"
-        "/del_cover - Delete saved thumbnail"
+def is_admin(user_id):
+    return user_id in admins
+
+
+# ================= COMMANDS =================
+@app.on_message(filters.command("start"))
+async def start(client, message: Message):
+    user_id = message.from_user.id
+    if not await check_force_sub(client, user_id):
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/c/{str(FORCE_CHANNEL)[4:]}")]
+        ])
+        return await message.reply(
+            "⚠️ You must join our channel to use this bot!",
+            reply_markup=keyboard
+        )
+
+    users.add(user_id)
+    chats.add(message.chat.id)
+    await message.reply(
+        f"👋 Hey {message.from_user.mention}!\n\n"
+        "✨ I can send your videos with custom thumbnails (HD Covers).\n"
+        "📌 Just send me a photo and it will be set as your thumbnail automatically.\n"
+        "Then send a video/document and I’ll apply your cover!\n\n"
+        "⚡ Fast • Simple • Powerful\n\n"
+        "🔗 Powered By @World_Fastest_Bots",
     )
 
-async def show_cover(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.message.from_user.id)
-    if user_id in user_data and user_data[user_id].get("thumb"):
-        await update.message.reply_photo(user_data[user_id]["thumb"], caption="📌 Your saved thumbnail")
+
+# ================= THUMBNAIL =================
+@app.on_message(filters.photo)
+async def auto_set_thumb(client, message: Message):
+    user_id = message.from_user.id
+    path = f"thumb_{user_id}.jpg"
+    await message.download(file_name=path)
+    thumbs[user_id] = path
+    await message.reply("✅ Thumbnail saved automatically!")
+
+
+@app.on_message(filters.command("show_cover"))
+async def show_cover(client, message: Message):
+    user_id = message.from_user.id
+    if user_id in thumbs and os.path.exists(thumbs[user_id]):
+        keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton("❌ Delete Thumbnail", callback_data=f"delthumb:{user_id}")]
+        ])
+        await message.reply_photo(thumbs[user_id], caption="🎭 Your Saved Thumbnail", reply_markup=keyboard)
     else:
-        await update.message.reply_text("❌ No thumbnail found. Send a photo first.")
+        await message.reply("❌ No thumbnail found.")
 
-async def del_cover(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.message.from_user.id)
-    if user_id in user_data and user_data[user_id].get("thumb"):
-        del user_data[user_id]["thumb"]
-        save_user_data(user_data)
-        await update.message.reply_text("🗑️ Thumbnail deleted.")
+
+@app.on_callback_query(filters.regex(r"^delthumb:(\d+)"))
+async def delete_thumb(client, callback_query):
+    user_id = int(callback_query.data.split(":")[1])
+    if user_id in thumbs and os.path.exists(thumbs[user_id]):
+        os.remove(thumbs[user_id])
+        thumbs.pop(user_id)
+        await callback_query.message.edit_caption("🗑️ Thumbnail deleted.")
     else:
-        await update.message.reply_text("❌ No thumbnail to delete.")
+        await callback_query.message.edit_caption("❌ No thumbnail to delete.")
 
-# ---------------- Handlers ----------------
-async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.message.from_user.id)
-    photo = update.message.photo[-1]  # best quality
-    file_id = photo.file_id
 
-    if user_id not in user_data:
-        user_data[user_id] = {}
-    user_data[user_id]["thumb"] = file_id
-    save_user_data(user_data)
+# ================= MEDIA HANDLING =================
+@app.on_message(filters.video | filters.document)
+async def process_media(client, message: Message):
+    user_id = message.from_user.id
+    users.add(user_id)
+    chats.add(message.chat.id)
 
-    await update.message.reply_text("✅ Thumbnail saved!")
+    caption = message.caption or ""
 
-async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_id = str(update.message.from_user.id)
-    video = update.message.video
+    # Bold captions for admins only
+    if is_admin(user_id) and caption:
+        caption = f"**{caption}**"
 
-    if user_id not in user_data or not user_data[user_id].get("thumb"):
-        return await update.message.reply_text("⚠️ No thumbnail set. Send a photo first.")
-
-    caption = f"**{update.message.caption or ''}**"
+    thumb_path = thumbs.get(user_id)
 
     try:
-        await context.bot.send_video(
-            chat_id=update.message.chat_id,
-            video=video.file_id,
-            thumb=user_data[user_id]["thumb"],
-            caption=caption,
-            parse_mode="Markdown",
-            supports_streaming=True
-        )
-    except TelegramError as e:
-        await update.message.reply_text(f"❌ Error: {e}")
+        if message.video:
+            await client.send_video(
+                chat_id=message.chat.id,
+                video=message.video.file_id,
+                caption=caption,
+                cover=thumb_path if thumb_path else None,
+            )
+        elif message.document:
+            await client.send_document(
+                chat_id=message.chat.id,
+                document=message.document.file_id,
+                caption=caption,
+                thumb=thumb_path if thumb_path else None,
+            )
+    except Exception as e:
+        await message.reply(f"⚠️ Error: {e}")
 
-# ---------------- Main ----------------
-def main():
-    app = Application.builder().token(BOT_TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("show_cover", show_cover))
-    app.add_handler(CommandHandler("del_cover", del_cover))
-    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
-    app.add_handler(MessageHandler(filters.VIDEO, handle_video))
+# ================= ADMIN SYSTEM =================
+@app.on_message(filters.command("addadmin") & filters.user(OWNER_ID))
+async def add_admin(client, message: Message):
+    if len(message.command) < 2:
+        return await message.reply("Usage: /addadmin <user_id>")
+    try:
+        new_admin = int(message.command[1])
+        if new_admin not in admins:
+            admins.append(new_admin)
+            await message.reply(f"✅ Added {new_admin} as admin.")
+        else:
+            await message.reply("⚠️ Already an admin.")
+    except:
+        await message.reply("❌ Invalid ID.")
 
-    print("✅ Bot started...")
-    app.run_polling()
 
-if __name__ == "__main__":
-    main()
+@app.on_message(filters.command("showadmin") & filters.user(OWNER_ID))
+async def show_admin(client, message: Message):
+    if not admins:
+        return await message.reply("❌ No admins set.")
+    admin_list = "\n".join([str(uid) for uid in admins])
+    await message.reply(f"👑 Admins:\n{admin_list}")
+
+
+@app.on_message(filters.command("removeadmin") & filters.user(OWNER_ID))
+async def remove_admin(client, message: Message):
+    if len(message.command) < 2:
+        return await message.reply("Usage: /removeadmin <user_id>")
+    try:
+        rem_admin = int(message.command[1])
+        if rem_admin in admins and rem_admin != OWNER_ID:
+            admins.remove(rem_admin)
+            await message.reply(f"🗑️ Removed {rem_admin} from admins.")
+        else:
+            await message.reply("⚠️ Cannot remove (maybe owner or not an admin).")
+    except:
+        await message.reply("❌ Invalid ID.")
+
+
+# ================= OWNER ONLY EXTRA =================
+@app.on_message(filters.command("users") & filters.user(OWNER_ID))
+async def list_users(client, message: Message):
+    await message.reply(f"👥 Total Unique Users: {len(users)}")
+
+
+@app.on_message(filters.command("stats") & filters.user(OWNER_ID))
+async def stats(client, message: Message):
+    stats_text = (
+        f"📊 **Bot Stats**\n\n"
+        f"👥 Users: `{len(users)}`\n"
+        f"👑 Admins: `{len(admins)}`\n"
+        f"💬 Chats: `{len(chats)}`\n"
+        f"🖼️ Thumbnails Saved: `{len(thumbs)}`"
+    )
+    await message.reply(stats_text)
+
+
+@app.on_message(filters.command("restart") & filters.user(OWNER_ID))
+async def restart_bot(client, message: Message):
+    await message.reply("♻️ Restarting bot...")
+    os.execl(sys.executable, sys.executable, *sys.argv)
+
+
+# ================= UTILS =================
+@app.on_message(filters.command("ping"))
+async def ping(client, message: Message):
+    start = time.time()
+    reply = await message.reply("🏓 Pong...")
+    end = time.time()
+    ms = int((end - start) * 1000)
+    await reply.edit_text(f"🏓 Pong! `{ms}ms`")
+
+
+@app.on_message(filters.command("dbroadcast") & filters.user(OWNER_ID))
+async def dbroadcast(client, message: Message):
+    if not message.reply_to_message:
+        return await message.reply("⚠️ Reply to a message to broadcast.\n\nUsage: /dbroadcast <seconds>")
+
+    if len(message.command) < 2:
+        return await message.reply("⚠️ Provide time in seconds.\n\nUsage: /dbroadcast <seconds>")
+
+    try:
+        seconds = int(message.command[1])
+    except:
+        return await message.reply("❌ Invalid time.")
+
+    sent_messages = []
+    for chat_id in chats:
+        try:
+            msg = await message.reply_to_message.copy(chat_id)
+            sent_messages.append((chat_id, msg.id))
+        except:
+            continue
+
+    await message.reply(f"✅ Broadcast sent to {len(sent_messages)} chats. Will delete in {seconds}s.")
+
+    await asyncio.sleep(seconds)
+
+    for chat_id, msg_id in sent_messages:
+        try:
+            await client.delete_messages(chat_id, msg_id)
+        except:
+            continue
+
+
+# ================= RUN =================
+print("Bot Running...")
+app.run()
