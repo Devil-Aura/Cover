@@ -6,10 +6,10 @@ from pyrogram import Client, filters
 from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton
 
 # ================= CONFIG =================
-API_ID = 22768311
-API_HASH = "702d8884f48b42e865425391432b3794"
-BOT_TOKEN = "8201239010:AAHPS8LY5CfCyYoxd4-HQB7AAiwgM57l--Y"
-OWNER_ID = 6040503076
+API_ID = 
+API_HASH = ""
+BOT_TOKEN = ""
+OWNER_ID = 
 FORCE_CHANNEL = -1002432405855  # Force sub channel ID
 
 # Memory data (reset after restart)
