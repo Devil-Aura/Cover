@@ -6,7 +6,7 @@ import sys
 from aiogram import Bot, Dispatcher, types
 from aiogram.utils import executor
 from aiogram.types import Message, ChatMember
-from aiogram.utils.exceptions import ChatAdminRequired, UserNotParticipant
+from aiogram.utils.exceptions import ChatAdminRequired
 
 # ===================== CONFIG =====================
 BOT_TOKEN = ""
@@ -39,8 +39,6 @@ async def check_force_sub(user_id):
         member = await bot.get_chat_member(FORCE_SUB_CHANNEL, user_id)
         if member.status in [ChatMember.MEMBER, ChatMember.ADMINISTRATOR, ChatMember.CREATOR]:
             return True
-        return False
-    except UserNotParticipant:
         return False
     except ChatAdminRequired:
         return True  # Bot is not admin, skip check
@@ -96,7 +94,6 @@ async def handle_video(message: Message):
     user_id = str(message.from_user.id)
     caption = message.caption or ""
 
-    # Bold caption for owner/admins
     if is_admin(message.from_user.id):
         caption = f"<b>{caption}</b>" if caption else ""
 
@@ -110,7 +107,6 @@ async def handle_video(message: Message):
             parse_mode="HTML",
             thumb=thumb
         )
-        # Removed: await message.reply("✅ Video sent with thumbnail!") 👈
     except Exception as e:
         await message.reply(f"⚠️ Error: {e}")
 
