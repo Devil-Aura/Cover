@@ -1,194 +1,208 @@
 import os
 import json
-import logging
-import asyncio
+import time
 import sys
-from aiogram import Bot, Dispatcher, types
-from aiogram.utils import executor
-from aiogram.types import Message, ChatMember
-from aiogram.utils.exceptions import ChatAdminRequired
+import asyncio
+import logging
+from datetime import datetime
 
-# ===================== CONFIG =====================
+from pyrogram import Client, filters
+from pyrogram.types import Message
+
+# ================= CONFIG =================
+API_ID = 22768311
+API_HASH = "702d8884f48b42e865425391432b3794"
 BOT_TOKEN = ""
 OWNER_ID = 
-FORCE_SUB_CHANNEL = -1002432405855
 DATA_FILE = "bot_data.json"
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-bot = Bot(token=BOT_TOKEN)
-dp = Dispatcher(bot)
+BOT = Client("thumbbot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# ===================== DATA STORAGE =====================
+# ================= STORAGE =================
 def load_data():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r") as f:
             return json.load(f)
     return {"users": {}, "admins": [OWNER_ID]}
 
-def save_data(data):
+def save_data():
     with open(DATA_FILE, "w") as f:
         json.dump(data, f, indent=2)
 
 data = load_data()
 
-# ===================== HELPERS =====================
-async def check_force_sub(user_id):
-    try:
-        member = await bot.get_chat_member(FORCE_SUB_CHANNEL, user_id)
-        if member.status in [ChatMember.MEMBER, ChatMember.ADMINISTRATOR, ChatMember.CREATOR]:
-            return True
-        return False
-    except ChatAdminRequired:
-        return True  # Bot is not admin, skip check
-    except Exception as e:
-        logger.error(f"ForceSub error: {e}")
-        return True
-
-def is_admin(user_id):
+def is_admin(user_id: int) -> bool:
     return user_id in data.get("admins", [])
 
-# ===================== START =====================
-@dp.message_handler(commands=["start"])
-async def start_cmd(message: Message):
-    user_id = message.from_user.id
-    if not await check_force_sub(user_id):
-        btn = types.InlineKeyboardMarkup().add(
-            types.InlineKeyboardButton("📢 Join Channel", url="https://t.me/World_Fastest_Bots"),
-            types.InlineKeyboardButton("✅ Joined", callback_data="checksub")
-        )
-        return await message.answer("⚠️ You must join our channel to use this bot.", reply_markup=btn)
-
-    if str(user_id) not in data["users"]:
-        data["users"][str(user_id)] = {"thumbnail": None}
-        save_data(data)
+# ================= START =================
+@BOT.on_message(filters.command("start"))
+async def start_cmd(client, m: Message):
+    user_id = str(m.from_user.id)
+    if user_id not in data["users"]:
+        data["users"][user_id] = {"thumbnail": None}
+        save_data()
 
     text = (
         "🎬 **Welcome to Video Thumbnail Changer Bot!**\n\n"
-        "📌 Send a **video**, then send an **image** to set as its thumbnail.\n"
-        "✨ If you send only an image, it will be saved as your default thumbnail.\n\n"
+        "📌 Send me a **video**, and I’ll apply your saved thumbnail.\n"
+        "✨ Send an **image** to save it as your default thumbnail.\n\n"
         "⚡ Powered by @World_Fastest_Bots"
     )
-    await message.answer(text, parse_mode="Markdown")
+    await m.reply_text(text, quote=False)
 
-@dp.callback_query_handler(lambda c: c.data == "checksub")
-async def check_subscription(callback_query: types.CallbackQuery):
-    if await check_force_sub(callback_query.from_user.id):
-        await callback_query.message.edit_text("✅ You have access now. Send me a video to continue.")
-    else:
-        await callback_query.answer("❌ You are still not joined.", show_alert=True)
+# ================= PING =================
+@BOT.on_message(filters.command("ping"))
+async def ping_cmd(client, m: Message):
+    start = time.time()
+    msg = await m.reply_text("🏓 Pinging...", quote=False)
+    end = time.time()
+    await msg.edit(f"🏓 Pong! `{round((end - start) * 1000)}ms`")
 
-# ===================== THUMBNAIL =====================
-@dp.message_handler(content_types=["photo"])
-async def save_thumbnail(message: Message):
-    user_id = str(message.from_user.id)
-    file_id = message.photo[-1].file_id
+# ================= THUMBNAIL =================
+@BOT.on_message(filters.photo)
+async def save_thumbnail(client, m: Message):
+    user_id = str(m.from_user.id)
+    file_id = m.photo.file_id
     data["users"][user_id]["thumbnail"] = file_id
-    save_data(data)
-    await message.reply("✅ Thumbnail saved. Now send me a video.")
+    save_data()
+    await m.reply_text("✅ Thumbnail saved successfully.", quote=False)
 
-# ===================== VIDEO =====================
-@dp.message_handler(content_types=["video"])
-async def handle_video(message: Message):
-    user_id = str(message.from_user.id)
-    caption = message.caption or ""
+@BOT.on_message(filters.command("showthumb"))
+async def show_thumb(client, m: Message):
+    user_id = str(m.from_user.id)
+    thumb = data["users"].get(user_id, {}).get("thumbnail")
+    if thumb:
+        await m.reply_photo(thumb, caption="🖼️ Your saved thumbnail.", quote=False)
+    else:
+        await m.reply_text("❌ You don't have any saved thumbnail.", quote=False)
 
-    if is_admin(message.from_user.id):
-        caption = f"<b>{caption}</b>" if caption else ""
+@BOT.on_message(filters.command("deletethumb"))
+async def delete_thumb(client, m: Message):
+    user_id = str(m.from_user.id)
+    if data["users"].get(user_id, {}).get("thumbnail"):
+        data["users"][user_id]["thumbnail"] = None
+        save_data()
+        await m.reply_text("🗑️ Thumbnail deleted.", quote=False)
+    else:
+        await m.reply_text("❌ No thumbnail to delete.", quote=False)
+
+# ================= VIDEO =================
+@BOT.on_message(filters.video)
+async def handle_video(client, m: Message):
+    user_id = str(m.from_user.id)
+    caption = m.caption or ""
+
+    # Bold caption for admins
+    if is_admin(m.from_user.id) and caption:
+        caption = f"<b>{caption}</b>"
 
     thumb = data["users"].get(user_id, {}).get("thumbnail")
 
     try:
-        await bot.send_video(
-            chat_id=message.chat.id,
-            video=message.video.file_id,
+        await BOT.send_video(
+            chat_id=m.chat.id,
+            video=m.video.file_id,
             caption=caption,
             parse_mode="HTML",
-            thumb=thumb
+            cover=thumb
         )
     except Exception as e:
-        await message.reply(f"⚠️ Error: {e}")
+        logger.error(f"Video Cover Error: {e}")
+        await m.reply_text(f"⚠️ Error: {e}", quote=False)
 
-# ===================== ADMIN COMMANDS =====================
-@dp.message_handler(commands=["addadmin"])
-async def add_admin(message: Message):
-    if message.from_user.id != OWNER_ID:
+# ================= ADMIN COMMANDS =================
+@BOT.on_message(filters.command("addadmin"))
+async def add_admin(client, m: Message):
+    if m.from_user.id != OWNER_ID:
         return
     try:
-        uid = int(message.get_args())
+        uid = int(m.text.split()[1])
         if uid not in data["admins"]:
             data["admins"].append(uid)
-            save_data(data)
-            await message.reply(f"✅ Added {uid} as admin.")
+            save_data()
+            await m.reply_text(f"✅ Added {uid} as admin.", quote=False)
         else:
-            await message.reply("⚠️ Already an admin.")
+            await m.reply_text("⚠️ Already an admin.", quote=False)
     except:
-        await message.reply("❌ Usage: /addadmin user_id")
+        await m.reply_text("❌ Usage: /addadmin user_id", quote=False)
 
-@dp.message_handler(commands=["removeadmin"])
-async def remove_admin(message: Message):
-    if message.from_user.id != OWNER_ID:
+@BOT.on_message(filters.command("removeadmin"))
+async def remove_admin(client, m: Message):
+    if m.from_user.id != OWNER_ID:
         return
     try:
-        uid = int(message.get_args())
+        uid = int(m.text.split()[1])
         if uid in data["admins"]:
             data["admins"].remove(uid)
-            save_data(data)
-            await message.reply(f"✅ Removed {uid} from admins.")
+            save_data()
+            await m.reply_text(f"✅ Removed {uid} from admins.", quote=False)
         else:
-            await message.reply("⚠️ Not an admin.")
+            await m.reply_text("⚠️ Not an admin.", quote=False)
     except:
-        await message.reply("❌ Usage: /removeadmin user_id")
+        await m.reply_text("❌ Usage: /removeadmin user_id", quote=False)
 
-@dp.message_handler(commands=["showadmin"])
-async def show_admins(message: Message):
-    if message.from_user.id != OWNER_ID:
+@BOT.on_message(filters.command("showadmin"))
+async def show_admins(client, m: Message):
+    if m.from_user.id != OWNER_ID:
         return
     admins = "\n".join(str(a) for a in data["admins"])
-    await message.reply(f"👮 Admins:\n{admins}")
+    await m.reply_text(f"👮 Admins:\n{admins}", quote=False)
 
-# ===================== OWNER COMMANDS =====================
-@dp.message_handler(commands=["users"])
-async def list_users(message: Message):
-    if message.from_user.id != OWNER_ID:
+# ================= OWNER COMMANDS =================
+@BOT.on_message(filters.command("users"))
+async def list_users(client, m: Message):
+    if m.from_user.id != OWNER_ID:
         return
     users = "\n".join(data["users"].keys())
-    await message.reply(f"👤 Users:\n{users}")
+    await m.reply_text(f"👤 Users:\n{users}", quote=False)
 
-@dp.message_handler(commands=["stats"])
-async def stats(message: Message):
-    if message.from_user.id != OWNER_ID:
+@BOT.on_message(filters.command("stats"))
+async def stats(client, m: Message):
+    if m.from_user.id != OWNER_ID:
         return
     total_users = len(data["users"])
     total_admins = len(data["admins"])
-    await message.reply(f"📊 Stats:\n👤 Users: {total_users}\n👮 Admins: {total_admins}")
+    await m.reply_text(f"📊 Stats:\n👤 Users: {total_users}\n👮 Admins: {total_admins}", quote=False)
 
-@dp.message_handler(commands=["restart"])
-async def restart(message: Message):
-    if message.from_user.id != OWNER_ID:
+@BOT.on_message(filters.command("restart"))
+async def restart(client, m: Message):
+    if m.from_user.id != OWNER_ID:
         return
-    await message.reply("♻️ Restarting...")
+    await m.reply_text("♻️ Restarting...", quote=False)
     os.execv(sys.executable, ["python3"] + sys.argv)
 
-@dp.message_handler(commands=["dbroadcast"])
-async def dbroadcast(message: Message):
-    if message.from_user.id != OWNER_ID:
+@BOT.on_message(filters.command("dbroadcast"))
+async def dbroadcast(client, m: Message):
+    if m.from_user.id != OWNER_ID:
         return
-    text = message.get_args()
-    if not text:
-        return await message.reply("❌ Usage: /dbroadcast <message>")
+    try:
+        parts = m.text.split(" ", 2)
+        duration = int(parts[1])
+        text = parts[2]
+    except:
+        return await m.reply_text("❌ Usage: /dbroadcast <seconds> <message>", quote=False)
 
-    success = 0
-    fail = 0
+    success, fail = 0, 0
+    sent_msgs = []
     for uid in data["users"].keys():
         try:
-            await bot.send_message(int(uid), text)
+            msg = await BOT.send_message(int(uid), text)
+            sent_msgs.append((uid, msg.message_id))
             success += 1
         except:
             fail += 1
-    await message.reply(f"✅ Broadcast done.\nSuccess: {success}\nFail: {fail}")
 
-# ===================== RUN =====================
-if __name__ == "__main__":
-    executor.start_polling(dp, skip_updates=True)
+    await m.reply_text(f"✅ Broadcast done.\nSuccess: {success}\nFail: {fail}\n⏳ Will delete in {duration}s", quote=False)
+
+    await asyncio.sleep(duration)
+    for uid, msg_id in sent_msgs:
+        try:
+            await BOT.delete_messages(int(uid), msg_id)
+        except:
+            pass
+
+# ================= RUN =================
+BOT.run()
