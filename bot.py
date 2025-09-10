@@ -1,194 +1,198 @@
 import os
-import asyncio
+import json
 import logging
+import asyncio
+import sys
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.utils import executor
-from aiogram.utils.exceptions import ChatAdminRequired, UserNotParticipantError
+from aiogram.types import Message, ChatMember
+from aiogram.utils.exceptions import ChatAdminRequired, UserNotParticipant
 
-# ---------------- CONFIG ----------------
-API_TOKEN = os.getenv("BOT_TOKEN", "")
-OWNER_ID = int(os.getenv("OWNER_ID", ""))
-FORCE_SUB_CHANNEL = int(os.getenv("FORCE_SUB_CHANNEL", "-1002432405855"))
+# ===================== CONFIG =====================
+BOT_TOKEN = ""
+OWNER_ID = 
+FORCE_SUB_CHANNEL = -1002432405855
+DATA_FILE = "bot_data.json"
 
-# Initialize
 logging.basicConfig(level=logging.INFO)
-bot = Bot(token=API_TOKEN)
+logger = logging.getLogger(__name__)
+
+bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot)
 
-# In-memory storage
-user_thumbs = {}
-admins = set([OWNER_ID])
-users = set()
+# ===================== DATA STORAGE =====================
+def load_data():
+    if os.path.exists(DATA_FILE):
+        with open(DATA_FILE, "r") as f:
+            return json.load(f)
+    return {"users": {}, "admins": [OWNER_ID]}
 
-# ---------------- HELPERS ----------------
-async def is_user_joined(user_id: int) -> bool:
+def save_data(data):
+    with open(DATA_FILE, "w") as f:
+        json.dump(data, f, indent=2)
+
+data = load_data()
+
+# ===================== HELPERS =====================
+async def check_force_sub(user_id):
     try:
         member = await bot.get_chat_member(FORCE_SUB_CHANNEL, user_id)
-        return member.status in ["member", "administrator", "creator"]
-    except UserNotParticipantError:
+        if member.status in [ChatMember.MEMBER, ChatMember.ADMINISTRATOR, ChatMember.CREATOR]:
+            return True
+        return False
+    except UserNotParticipant:
         return False
     except ChatAdminRequired:
+        return True  # Bot is not admin, skip check
+    except Exception as e:
+        logger.error(f"ForceSub error: {e}")
         return True
-    except Exception:
-        return False
 
-def is_admin(user_id: int) -> bool:
-    return user_id in admins or user_id == OWNER_ID
+def is_admin(user_id):
+    return user_id in data.get("admins", [])
 
-# ---------------- COMMANDS ----------------
+# ===================== START =====================
 @dp.message_handler(commands=["start"])
-async def start_cmd(message: types.Message):
+async def start_cmd(message: Message):
     user_id = message.from_user.id
-    users.add(user_id)
-
-    if not await is_user_joined(user_id):
-        btn = InlineKeyboardMarkup().add(
-            InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/c/{str(FORCE_SUB_CHANNEL)[4:]}")
+    if not await check_force_sub(user_id):
+        btn = types.InlineKeyboardMarkup().add(
+            types.InlineKeyboardButton("📢 Join Channel", url="https://t.me/World_Fastest_Bots"),
+            types.InlineKeyboardButton("✅ Joined", callback_data="checksub")
         )
-        return await message.reply("⚠️ You must join our channel to use this bot.", reply_markup=btn)
+        return await message.answer("⚠️ You must join our channel to use this bot.", reply_markup=btn)
 
-    await message.reply(
-        f"👋 Hi {message.from_user.first_name}!\n\n"
-        "🎬 **Video Cover/Thumbnail Bot**\n\n"
-        "✨ Send me a photo → It will be saved as your thumbnail.\n"
-        "🎥 Send me a video → I’ll apply your saved thumbnail.\n\n"
-        "⚡ Commands:\n"
-        "/show_cover - View your thumbnail\n"
-        "/del_cover - Delete your thumbnail\n"
-        "/ping - Check if bot is alive\n\n"
-        "Powered By: @World_Fastest_Bots"
+    if str(user_id) not in data["users"]:
+        data["users"][str(user_id)] = {"thumbnail": None}
+        save_data(data)
+
+    text = (
+        "🎬 **Welcome to Video Thumbnail Changer Bot!**\n\n"
+        "📌 Send a **video**, then send an **image** to set as its thumbnail.\n"
+        "✨ If you send only an image, it will be saved as your default thumbnail.\n\n"
+        "⚡ Powered by @World_Fastest_Bots"
     )
+    await message.answer(text, parse_mode="Markdown")
 
-@dp.message_handler(commands=["ping"])
-async def ping_cmd(message: types.Message):
-    await message.reply("✅ Pong! Bot is alive.")
+@dp.callback_query_handler(lambda c: c.data == "checksub")
+async def check_subscription(callback_query: types.CallbackQuery):
+    if await check_force_sub(callback_query.from_user.id):
+        await callback_query.message.edit_text("✅ You have access now. Send me a video to continue.")
+    else:
+        await callback_query.answer("❌ You are still not joined.", show_alert=True)
 
+# ===================== THUMBNAIL =====================
+@dp.message_handler(content_types=["photo"])
+async def save_thumbnail(message: Message):
+    user_id = str(message.from_user.id)
+    file_id = message.photo[-1].file_id
+    data["users"][user_id]["thumbnail"] = file_id
+    save_data(data)
+    await message.reply("✅ Thumbnail saved. Now send me a video.")
+
+# ===================== VIDEO =====================
+@dp.message_handler(content_types=["video"])
+async def handle_video(message: Message):
+    user_id = str(message.from_user.id)
+    caption = message.caption or ""
+
+    # Bold caption for owner/admins
+    if is_admin(message.from_user.id):
+        caption = f"<b>{caption}</b>" if caption else ""
+
+    thumb = data["users"].get(user_id, {}).get("thumbnail")
+
+    try:
+        await bot.send_video(
+            chat_id=message.chat.id,
+            video=message.video.file_id,
+            caption=caption,
+            parse_mode="HTML",
+            thumb=thumb
+        )
+        # Removed: await message.reply("✅ Video sent with thumbnail!") 👈
+    except Exception as e:
+        await message.reply(f"⚠️ Error: {e}")
+
+# ===================== ADMIN COMMANDS =====================
 @dp.message_handler(commands=["addadmin"])
-async def add_admin(message: types.Message):
+async def add_admin(message: Message):
     if message.from_user.id != OWNER_ID:
         return
     try:
         uid = int(message.get_args())
-        admins.add(uid)
-        await message.reply(f"✅ User `{uid}` added as admin.")
+        if uid not in data["admins"]:
+            data["admins"].append(uid)
+            save_data(data)
+            await message.reply(f"✅ Added {uid} as admin.")
+        else:
+            await message.reply("⚠️ Already an admin.")
     except:
-        await message.reply("⚠️ Usage: /addadmin <user_id>")
+        await message.reply("❌ Usage: /addadmin user_id")
 
 @dp.message_handler(commands=["removeadmin"])
-async def remove_admin(message: types.Message):
+async def remove_admin(message: Message):
     if message.from_user.id != OWNER_ID:
         return
     try:
         uid = int(message.get_args())
-        admins.discard(uid)
-        await message.reply(f"❌ User `{uid}` removed from admins.")
+        if uid in data["admins"]:
+            data["admins"].remove(uid)
+            save_data(data)
+            await message.reply(f"✅ Removed {uid} from admins.")
+        else:
+            await message.reply("⚠️ Not an admin.")
     except:
-        await message.reply("⚠️ Usage: /removeadmin <user_id>")
+        await message.reply("❌ Usage: /removeadmin user_id")
 
 @dp.message_handler(commands=["showadmin"])
-async def show_admin(message: types.Message):
+async def show_admins(message: Message):
     if message.from_user.id != OWNER_ID:
         return
-    text = "👮 Admins:\n" + "\n".join([str(a) for a in admins])
-    await message.reply(text)
+    admins = "\n".join(str(a) for a in data["admins"])
+    await message.reply(f"👮 Admins:\n{admins}")
 
+# ===================== OWNER COMMANDS =====================
 @dp.message_handler(commands=["users"])
-async def users_cmd(message: types.Message):
+async def list_users(message: Message):
     if message.from_user.id != OWNER_ID:
         return
-    await message.reply(f"👥 Total users: {len(users)}")
+    users = "\n".join(data["users"].keys())
+    await message.reply(f"👤 Users:\n{users}")
 
 @dp.message_handler(commands=["stats"])
-async def stats_cmd(message: types.Message):
+async def stats(message: Message):
     if message.from_user.id != OWNER_ID:
         return
-    await message.reply(
-        f"📊 Stats:\n"
-        f"👥 Users: {len(users)}\n"
-        f"👮 Admins: {len(admins)}"
-    )
+    total_users = len(data["users"])
+    total_admins = len(data["admins"])
+    await message.reply(f"📊 Stats:\n👤 Users: {total_users}\n👮 Admins: {total_admins}")
 
 @dp.message_handler(commands=["restart"])
-async def restart_cmd(message: types.Message):
+async def restart(message: Message):
     if message.from_user.id != OWNER_ID:
         return
-    await message.reply("♻️ Restarting bot...")
-    os.execl(sys.executable, sys.executable, *sys.argv)
+    await message.reply("♻️ Restarting...")
+    os.execv(sys.executable, ["python3"] + sys.argv)
 
 @dp.message_handler(commands=["dbroadcast"])
-async def dbroadcast_cmd(message: types.Message):
+async def dbroadcast(message: Message):
     if message.from_user.id != OWNER_ID:
         return
-    args = message.get_args().split(maxsplit=1)
-    if len(args) < 2:
-        return await message.reply("⚠️ Usage: /dbroadcast <seconds> <message>")
-    try:
-        seconds = int(args[0])
-        text = args[1]
-    except:
-        return await message.reply("⚠️ Invalid format. Example: /dbroadcast 30 Hello World")
+    text = message.get_args()
+    if not text:
+        return await message.reply("❌ Usage: /dbroadcast <message>")
 
-    for uid in users:
+    success = 0
+    fail = 0
+    for uid in data["users"].keys():
         try:
-            sent = await bot.send_message(uid, text)
-            await asyncio.sleep(0.1)
-            await asyncio.sleep(seconds)
-            await bot.delete_message(uid, sent.message_id)
+            await bot.send_message(int(uid), text)
+            success += 1
         except:
-            continue
-    await message.reply("✅ Timed broadcast sent.")
+            fail += 1
+    await message.reply(f"✅ Broadcast done.\nSuccess: {success}\nFail: {fail}")
 
-# ---------------- THUMBNAIL ----------------
-@dp.message_handler(content_types=["photo"])
-async def save_thumb(message: types.Message):
-    user_id = message.from_user.id
-    user_thumbs[user_id] = message.photo[-1].file_id
-    await message.reply("✅ Thumbnail saved! Now send me a video.")
-
-@dp.message_handler(commands=["show_cover"])
-async def show_cover(message: types.Message):
-    user_id = message.from_user.id
-    if user_id not in user_thumbs:
-        return await message.reply("❌ No thumbnail found.")
-    btn = InlineKeyboardMarkup().add(InlineKeyboardButton("❌ Delete", callback_data="del_thumb"))
-    await message.reply_photo(user_thumbs[user_id], caption="🎬 Your saved thumbnail.", reply_markup=btn)
-
-@dp.callback_query_handler(lambda c: c.data == "del_thumb")
-async def del_thumb_cb(callback: types.CallbackQuery):
-    user_id = callback.from_user.id
-    if user_id in user_thumbs:
-        del user_thumbs[user_id]
-        await callback.message.edit_caption("🗑️ Thumbnail deleted.")
-    else:
-        await callback.answer("❌ No thumbnail found.", show_alert=True)
-
-@dp.message_handler(commands=["del_cover"])
-async def del_cover(message: types.Message):
-    user_id = message.from_user.id
-    if user_id in user_thumbs:
-        del user_thumbs[user_id]
-        await message.reply("🗑️ Thumbnail deleted.")
-    else:
-        await message.reply("❌ No thumbnail found.")
-
-@dp.message_handler(content_types=["video"])
-async def apply_thumb(message: types.Message):
-    user_id = message.from_user.id
-    if user_id not in user_thumbs:
-        return await message.reply("⚠️ No thumbnail set. Send me a photo first.")
-
-    caption = message.caption or ""
-    if is_admin(user_id):
-        caption = f"**{caption}**" if caption else ""
-
-    await bot.send_video(
-        chat_id=message.chat.id,
-        video=message.video.file_id,
-        caption=caption,
-        thumb=user_thumbs[user_id]
-    )
-
-# ---------------- MAIN ----------------
+# ===================== RUN =====================
 if __name__ == "__main__":
     executor.start_polling(dp, skip_updates=True)
