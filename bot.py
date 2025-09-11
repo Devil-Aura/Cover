@@ -1,27 +1,24 @@
 import os
 import json
-import time
-import sys
-import asyncio
 import logging
-from datetime import datetime
-
-from pyrogram import Client, filters
-from pyrogram.types import Message
+import asyncio
+import sys
+import time
+from aiogram import Bot, Dispatcher, types
+from aiogram.utils import executor
 
 # ================= CONFIG =================
-API_ID = 22768311
-API_HASH = "702d8884f48b42e865425391432b3794"
 BOT_TOKEN = ""
 OWNER_ID = 
 DATA_FILE = "bot_data.json"
 
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("CoverBot")
 
-BOT = Client("thumbbot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+bot = Bot(token=BOT_TOKEN)
+dp = Dispatcher(bot)
 
-# ================= STORAGE =================
+# ================ DATA STORAGE =================
 def load_data():
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r") as f:
@@ -34,175 +31,190 @@ def save_data():
 
 data = load_data()
 
-def is_admin(user_id: int) -> bool:
-    return user_id in data.get("admins", [])
+def ensure_user(uid: int):
+    uid = str(uid)
+    if uid not in data["users"]:
+        data["users"][uid] = {"thumb": None}
+        save_data()
+
+def is_owner(uid: int):
+    return uid == OWNER_ID
+
+def is_admin(uid: int):
+    return uid in data["admins"]
 
 # ================= START =================
-@BOT.on_message(filters.command("start"))
-async def start_cmd(client, m: Message):
-    user_id = str(m.from_user.id)
-    if user_id not in data["users"]:
-        data["users"][user_id] = {"thumbnail": None}
-        save_data()
-
+@dp.message_handler(commands=["start"])
+async def start_cmd(m: types.Message):
+    ensure_user(m.from_user.id)
     text = (
-        "🎬 **Welcome to Video Thumbnail Changer Bot!**\n\n"
-        "📌 Send me a **video**, and I’ll apply your saved thumbnail.\n"
-        "✨ Send an **image** to save it as your default thumbnail.\n\n"
+        "🎬 <b>Welcome to Video Cover Changer Bot!</b>\n\n"
+        "📌 Send me a <b>video</b> and I’ll apply your saved cover.\n"
+        "🖼️ Send an <b>image</b> to set as your cover.\n\n"
         "⚡ Powered by @World_Fastest_Bots"
     )
-    await m.reply_text(text, quote=False)
+    await m.answer(text, parse_mode="HTML")
 
 # ================= PING =================
-@BOT.on_message(filters.command("ping"))
-async def ping_cmd(client, m: Message):
+@dp.message_handler(commands=["ping"])
+async def ping_cmd(m: types.Message):
     start = time.time()
-    msg = await m.reply_text("🏓 Pinging...", quote=False)
+    sent = await m.answer("🏓 Pong...")
     end = time.time()
-    await msg.edit(f"🏓 Pong! `{round((end - start) * 1000)}ms`")
+    await sent.edit_text(f"🏓 Pong! `{int((end-start)*1000)} ms`", parse_mode="Markdown")
 
 # ================= THUMBNAIL =================
-@BOT.on_message(filters.photo)
-async def save_thumbnail(client, m: Message):
-    user_id = str(m.from_user.id)
-    file_id = m.photo.file_id
-    data["users"][user_id]["thumbnail"] = file_id
+@dp.message_handler(content_types=["photo"])
+async def save_thumbnail(m: types.Message):
+    uid = str(m.from_user.id)
+    ensure_user(uid)
+    file_id = m.photo[-1].file_id
+    data["users"][uid]["thumb"] = file_id
     save_data()
-    await m.reply_text("✅ Thumbnail saved successfully.", quote=False)
+    await m.reply("✅ Cover saved! Now send me a video.")
 
-@BOT.on_message(filters.command("showthumb"))
-async def show_thumb(client, m: Message):
-    user_id = str(m.from_user.id)
-    thumb = data["users"].get(user_id, {}).get("thumbnail")
+@dp.message_handler(commands=["show_cover"])
+async def show_cover(m: types.Message):
+    uid = str(m.from_user.id)
+    ensure_user(uid)
+    thumb = data["users"][uid].get("thumb")
     if thumb:
-        await m.reply_photo(thumb, caption="🖼️ Your saved thumbnail.", quote=False)
+        await m.answer_photo(thumb, caption="🖼️ This is your current cover.")
     else:
-        await m.reply_text("❌ You don't have any saved thumbnail.", quote=False)
+        await m.reply("❌ You don’t have a saved cover.")
 
-@BOT.on_message(filters.command("deletethumb"))
-async def delete_thumb(client, m: Message):
-    user_id = str(m.from_user.id)
-    if data["users"].get(user_id, {}).get("thumbnail"):
-        data["users"][user_id]["thumbnail"] = None
-        save_data()
-        await m.reply_text("🗑️ Thumbnail deleted.", quote=False)
-    else:
-        await m.reply_text("❌ No thumbnail to delete.", quote=False)
+@dp.message_handler(commands=["delete_cover"])
+async def delete_cover(m: types.Message):
+    uid = str(m.from_user.id)
+    ensure_user(uid)
+    data["users"][uid]["thumb"] = None
+    save_data()
+    await m.reply("🗑️ Cover deleted.")
 
 # ================= VIDEO =================
-@BOT.on_message(filters.video)
-async def handle_video(client, m: Message):
-    user_id = str(m.from_user.id)
+@dp.message_handler(content_types=["video"])
+async def handle_video(m: types.Message):
+    uid = str(m.from_user.id)
+    ensure_user(uid)
+    thumbnail = data["users"][uid].get("thumb")
+
     caption = m.caption or ""
-
-    # Bold caption for admins
-    if is_admin(m.from_user.id) and caption:
-        caption = f"<b>{caption}</b>"
-
-    thumb = data["users"].get(user_id, {}).get("thumbnail")
+    if is_owner(m.from_user.id) or is_admin(m.from_user.id):
+        caption = f"<b>{caption}</b>" if caption else None
+        parse_mode = "HTML"
+    else:
+        parse_mode = None
 
     try:
-        await BOT.send_video(
+        await bot.send_video(
             chat_id=m.chat.id,
             video=m.video.file_id,
             caption=caption,
-            parse_mode="HTML",
-            cover=thumb
+            parse_mode=parse_mode,
+            cover=thumbnail,  # your requested param
         )
     except Exception as e:
         logger.error(f"Video Cover Error: {e}")
-        await m.reply_text(f"⚠️ Error: {e}", quote=False)
+        await m.reply(f"⚠️ Error applying cover: {e}")
 
 # ================= ADMIN COMMANDS =================
-@BOT.on_message(filters.command("addadmin"))
-async def add_admin(client, m: Message):
-    if m.from_user.id != OWNER_ID:
+@dp.message_handler(commands=["addadmin"])
+async def add_admin(m: types.Message):
+    if not is_owner(m.from_user.id):
         return
     try:
-        uid = int(m.text.split()[1])
+        uid = int(m.get_args())
         if uid not in data["admins"]:
             data["admins"].append(uid)
             save_data()
-            await m.reply_text(f"✅ Added {uid} as admin.", quote=False)
+            await m.reply(f"✅ Added {uid} as admin.")
         else:
-            await m.reply_text("⚠️ Already an admin.", quote=False)
+            await m.reply("⚠️ Already admin.")
     except:
-        await m.reply_text("❌ Usage: /addadmin user_id", quote=False)
+        await m.reply("❌ Usage: /addadmin <user_id>")
 
-@BOT.on_message(filters.command("removeadmin"))
-async def remove_admin(client, m: Message):
-    if m.from_user.id != OWNER_ID:
+@dp.message_handler(commands=["removeadmin"])
+async def remove_admin(m: types.Message):
+    if not is_owner(m.from_user.id):
         return
     try:
-        uid = int(m.text.split()[1])
+        uid = int(m.get_args())
         if uid in data["admins"]:
             data["admins"].remove(uid)
             save_data()
-            await m.reply_text(f"✅ Removed {uid} from admins.", quote=False)
+            await m.reply(f"✅ Removed {uid} from admins.")
         else:
-            await m.reply_text("⚠️ Not an admin.", quote=False)
+            await m.reply("⚠️ Not admin.")
     except:
-        await m.reply_text("❌ Usage: /removeadmin user_id", quote=False)
+        await m.reply("❌ Usage: /removeadmin <user_id>")
 
-@BOT.on_message(filters.command("showadmin"))
-async def show_admins(client, m: Message):
-    if m.from_user.id != OWNER_ID:
+@dp.message_handler(commands=["showadmin"])
+async def show_admins(m: types.Message):
+    if not is_owner(m.from_user.id):
         return
     admins = "\n".join(str(a) for a in data["admins"])
-    await m.reply_text(f"👮 Admins:\n{admins}", quote=False)
+    await m.reply(f"👮 Admins:\n{admins}")
 
 # ================= OWNER COMMANDS =================
-@BOT.on_message(filters.command("users"))
-async def list_users(client, m: Message):
-    if m.from_user.id != OWNER_ID:
+@dp.message_handler(commands=["users"])
+async def list_users(m: types.Message):
+    if not is_owner(m.from_user.id):
         return
     users = "\n".join(data["users"].keys())
-    await m.reply_text(f"👤 Users:\n{users}", quote=False)
+    await m.reply(f"👤 Users:\n{users}")
 
-@BOT.on_message(filters.command("stats"))
-async def stats(client, m: Message):
-    if m.from_user.id != OWNER_ID:
+@dp.message_handler(commands=["stats"])
+async def stats(m: types.Message):
+    if not is_owner(m.from_user.id):
         return
     total_users = len(data["users"])
     total_admins = len(data["admins"])
-    await m.reply_text(f"📊 Stats:\n👤 Users: {total_users}\n👮 Admins: {total_admins}", quote=False)
+    await m.reply(f"📊 Stats:\n👤 Users: {total_users}\n👮 Admins: {total_admins}")
 
-@BOT.on_message(filters.command("restart"))
-async def restart(client, m: Message):
-    if m.from_user.id != OWNER_ID:
+@dp.message_handler(commands=["restart"])
+async def restart(m: types.Message):
+    if not is_owner(m.from_user.id):
         return
-    await m.reply_text("♻️ Restarting...", quote=False)
+    await m.reply("♻️ Restarting...")
     os.execv(sys.executable, ["python3"] + sys.argv)
 
-@BOT.on_message(filters.command("dbroadcast"))
-async def dbroadcast(client, m: Message):
-    if m.from_user.id != OWNER_ID:
+# ================= BROADCAST =================
+@dp.message_handler(commands=["broadcast"])
+async def broadcast(m: types.Message):
+    if not is_owner(m.from_user.id):
         return
-    try:
-        parts = m.text.split(" ", 2)
-        duration = int(parts[1])
-        text = parts[2]
-    except:
-        return await m.reply_text("❌ Usage: /dbroadcast <seconds> <message>", quote=False)
-
+    if not m.reply_to_message:
+        return await m.reply("❌ Reply to a message to broadcast.")
     success, fail = 0, 0
-    sent_msgs = []
-    for uid in data["users"].keys():
+    for uid in list(data["users"].keys()):
         try:
-            msg = await BOT.send_message(int(uid), text)
-            sent_msgs.append((uid, msg.message_id))
+            await m.reply_to_message.copy_to(int(uid))
             success += 1
         except:
             fail += 1
+    await m.reply(f"📢 Broadcast done.\n✅ Success: {success}\n❌ Fail: {fail}")
 
-    await m.reply_text(f"✅ Broadcast done.\nSuccess: {success}\nFail: {fail}\n⏳ Will delete in {duration}s", quote=False)
-
-    await asyncio.sleep(duration)
-    for uid, msg_id in sent_msgs:
+@dp.message_handler(commands=["dbroadcast"])
+async def dbroadcast(m: types.Message):
+    if not is_owner(m.from_user.id):
+        return
+    if not m.reply_to_message:
+        return await m.reply("❌ Reply to a message to dbroadcast.")
+    try:
+        secs = int(m.get_args())
+    except:
+        return await m.reply("❌ Usage: /dbroadcast <seconds> (reply to msg)")
+    success, fail = 0, 0
+    for uid in list(data["users"].keys()):
         try:
-            await BOT.delete_messages(int(uid), msg_id)
+            sent = await m.reply_to_message.copy_to(int(uid))
+            await asyncio.sleep(secs)
+            await bot.delete_message(int(uid), sent.message_id)
+            success += 1
         except:
-            pass
+            fail += 1
+    await m.reply(f"🕒 Timed broadcast done.\n✅ Success: {success}\n❌ Fail: {fail}")
 
 # ================= RUN =================
-BOT.run()
+if __name__ == "__main__":
+    executor.start_polling(dp, skip_updates=True)
