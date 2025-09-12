@@ -1,193 +1,191 @@
-import asyncio
-import logging
 import os
 import sys
-from aiogram import Bot, Dispatcher, types
-from aiogram.utils import executor
-from aiogram.types import InputMediaVideo
+import asyncio
+import time
+import sqlite3
+from pyrogram import Client, filters
+from pyrogram.types import Message
 
-API_TOKEN = ""
-OWNER_ID =   # 🔥 Replace with your Telegram ID
+# ========================
+# CONFIG
+# ========================
+API_ID =       # your api_id
+API_HASH = ""
+BOT_TOKEN = ""
+OWNER_ID =  # your telegram user id
 
-# Logging
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("CoverBot")
+app = Client("cover-bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# Bot & Dispatcher
-bot = Bot(token=API_TOKEN, parse_mode="HTML")
-dp = Dispatcher(bot)
+# ========================
+# DATABASE
+# ========================
+conn = sqlite3.connect("bot.db")
+cursor = conn.cursor()
 
-# Simple DB
-COVER_DB = {}   # {chat_id: file_id}
-USERS = set()   # track chats for broadcast
-ADMINS = {OWNER_ID}  # start with owner as admin
+cursor.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY)")
+cursor.execute("CREATE TABLE IF NOT EXISTS admins (user_id INTEGER PRIMARY KEY)")
+# Now per-user cover (instead of global)
+cursor.execute("CREATE TABLE IF NOT EXISTS covers (user_id INTEGER PRIMARY KEY, file_id TEXT)")
+conn.commit()
 
+# ========================
+# HELPERS
+# ========================
+def add_user(user_id):
+    cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
+    conn.commit()
 
-# ----------------- Helpers -----------------
-def is_admin(uid: int):
-    return uid in ADMINS or uid == OWNER_ID
+def is_admin(user_id):
+    if user_id == OWNER_ID:
+        return True
+    cursor.execute("SELECT user_id FROM admins WHERE user_id=?", (user_id,))
+    return cursor.fetchone() is not None
 
+def save_cover(user_id, file_id):
+    cursor.execute("REPLACE INTO covers (user_id, file_id) VALUES (?, ?)", (user_id, file_id))
+    conn.commit()
 
-async def save_cover(chat_id: int, file_id: str):
-    COVER_DB[chat_id] = file_id
+def get_cover(user_id):
+    cursor.execute("SELECT file_id FROM covers WHERE user_id=?", (user_id,))
+    row = cursor.fetchone()
+    return row[0] if row else None
 
+def del_cover(user_id):
+    cursor.execute("DELETE FROM covers WHERE user_id=?", (user_id,))
+    conn.commit()
 
-async def get_cover(chat_id: int):
-    return COVER_DB.get(chat_id)
+# ========================
+# COMMANDS
+# ========================
+@app.on_message(filters.command("ping"))
+async def ping(_, m: Message):
+    start = time.time()
+    reply = await m.reply("Pinging...")
+    end = time.time()
+    await reply.edit_text(f"🏓 Pong! `{round((end-start)*1000)} ms`")
 
-
-async def delete_cover(chat_id: int):
-    if chat_id in COVER_DB:
-        del COVER_DB[chat_id]
-
-
-# ----------------- Commands -----------------
-@dp.message_handler(commands=["start"])
-async def start_cmd(m: types.Message):
-    USERS.add(m.chat.id)
-    await m.reply("👋 Hello! Send me an image to set as cover.\nSend a video and I’ll apply the cover instantly.")
-
-
-@dp.message_handler(commands=["ping"])
-async def ping_cmd(m: types.Message):
-    start = asyncio.get_event_loop().time()
-    msg = await m.reply("🏓 Pinging...")
-    end = asyncio.get_event_loop().time()
-    await msg.edit_text(f"✅ Pong! `{round((end - start) * 1000)} ms`")
-
-
-@dp.message_handler(commands=["restart"])
-async def restart_cmd(m: types.Message):
-    if not is_admin(m.from_user.id):
-        return await m.reply("⛔ Only admins can restart.")
+@app.on_message(filters.command("restart") & filters.user(OWNER_ID))
+async def restart(_, m: Message):
     await m.reply("♻️ Restarting...")
     os.execv(sys.executable, ['python'] + sys.argv)
 
-
-@dp.message_handler(commands=["show_cover"])
-async def show_cover(m: types.Message):
-    thumb = await get_cover(m.chat.id)
-    if not thumb:
-        await m.reply("⚠️ No cover set yet. Send me an image to save as cover.")
+@app.on_message(filters.command("show_cover"))
+async def show_cover(_, m: Message):
+    cover = get_cover(m.from_user.id)
+    if cover:
+        await m.reply_photo(cover, caption="📸 Your Current Cover")
     else:
-        await bot.send_photo(m.chat.id, thumb, caption="🖼️ Current saved cover:")
+        await m.reply("❌ You don't have any cover set.")
 
+@app.on_message(filters.command("del_cover"))
+async def delete_cover(_, m: Message):
+    del_cover(m.from_user.id)
+    await m.reply("🗑️ Your cover deleted.")
 
-@dp.message_handler(commands=["delete_cover"])
-async def delete_cover_cmd(m: types.Message):
-    await delete_cover(m.chat.id)
-    await m.reply("🗑️ Cover deleted successfully.")
+@app.on_message(filters.command("users"))
+async def show_users(_, m: Message):
+    cursor.execute("SELECT COUNT(*) FROM users")
+    count = cursor.fetchone()[0]
+    await m.reply(f"👥 Total users: `{count}`")
 
+@app.on_message(filters.command("stats"))
+async def stats(_, m: Message):
+    cursor.execute("SELECT COUNT(*) FROM users")
+    ucount = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM admins")
+    acount = cursor.fetchone()[0]
+    await m.reply(f"📊 Stats:\n👥 Users: `{ucount}`\n👮 Admins: `{acount}`")
 
-@dp.message_handler(commands=["broadcast"])
-async def broadcast_cmd(m: types.Message):
-    if not is_admin(m.from_user.id):
-        return await m.reply("⛔ Only admins can broadcast.")
-    if not m.reply_to_message:
-        return await m.reply("⚠️ Reply to a message to broadcast it.")
-    for uid in USERS:
-        try:
-            await m.reply_to_message.copy_to(uid)
-        except Exception as e:
-            logger.error(f"Broadcast failed to {uid}: {e}")
-    await m.reply("✅ Broadcast completed!")
-
-
-@dp.message_handler(commands=["dbroadcast"])
-async def dbroadcast_cmd(m: types.Message):
-    if not is_admin(m.from_user.id):
-        return await m.reply("⛔ Only admins can use dbroadcast.")
-    if not m.reply_to_message:
-        return await m.reply("⚠️ Reply to a message to broadcast it.\nUsage: /dbroadcast 30 (auto delete in 30s)")
-    args = m.text.split()
-    if len(args) < 2 or not args[1].isdigit():
-        return await m.reply("⚠️ Usage: /dbroadcast <seconds>")
-    delay = int(args[1])
-
-    for uid in USERS:
-        try:
-            sent = await m.reply_to_message.copy_to(uid)
-            await asyncio.sleep(0.5)
-            asyncio.create_task(auto_delete(uid, sent.message_id, delay))
-        except Exception as e:
-            logger.error(f"DBroadcast failed to {uid}: {e}")
-    await m.reply(f"✅ Delayed broadcast sent! Will auto-delete in {delay}s.")
-
-
-async def auto_delete(chat_id, msg_id, delay):
-    await asyncio.sleep(delay)
-    try:
-        await bot.delete_message(chat_id, msg_id)
-    except Exception:
-        pass
-
-
-# ----------------- Admin Commands -----------------
-@dp.message_handler(commands=["addadmin"])
-async def add_admin(m: types.Message):
-    if m.from_user.id != OWNER_ID:
-        return await m.reply("⛔ Only owner can add admins.")
-    args = m.text.split()
-    if len(args) < 2 or not args[1].isdigit():
-        return await m.reply("⚠️ Usage: /addadmin <user_id>")
-    uid = int(args[1])
-    ADMINS.add(uid)
+@app.on_message(filters.command("addadmin") & filters.user(OWNER_ID))
+async def add_admin(_, m: Message):
+    if len(m.command) < 2:
+        return await m.reply("Usage: /addadmin user_id")
+    uid = int(m.command[1])
+    cursor.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (uid,))
+    conn.commit()
     await m.reply(f"✅ User `{uid}` added as admin.")
 
+@app.on_message(filters.command("removeadmin") & filters.user(OWNER_ID))
+async def remove_admin(_, m: Message):
+    if len(m.command) < 2:
+        return await m.reply("Usage: /removeadmin user_id")
+    uid = int(m.command[1])
+    cursor.execute("DELETE FROM admins WHERE user_id=?", (uid,))
+    conn.commit()
+    await m.reply(f"🗑️ User `{uid}` removed from admins.")
 
-@dp.message_handler(commands=["removeadmin"])
-async def remove_admin(m: types.Message):
-    if m.from_user.id != OWNER_ID:
-        return await m.reply("⛔ Only owner can remove admins.")
-    args = m.text.split()
-    if len(args) < 2 or not args[1].isdigit():
-        return await m.reply("⚠️ Usage: /removeadmin <user_id>")
-    uid = int(args[1])
-    if uid in ADMINS:
-        ADMINS.remove(uid)
-        await m.reply(f"✅ User `{uid}` removed from admins.")
-    else:
-        await m.reply("⚠️ That user is not an admin.")
-
-
-@dp.message_handler(commands=["showadmins"])
-async def show_admins(m: types.Message):
-    admins = list(ADMINS) + [OWNER_ID]
-    text = "👑 <b>Admins:</b>\n" + "\n".join([f"• <code>{i}</code>" for i in admins])
+@app.on_message(filters.command("showadmin"))
+async def show_admins(_, m: Message):
+    cursor.execute("SELECT user_id FROM admins")
+    rows = cursor.fetchall()
+    text = "👮 Admins:\n"
+    text += "\n".join([f"- `{r[0]}`" for r in rows]) if rows else "No admins."
     await m.reply(text)
 
+@app.on_message(filters.command("dbroadcast") & filters.user([OWNER_ID]))
+async def dbroadcast(_, m: Message):
+    if not m.reply_to_message:
+        return await m.reply("Reply to a message with /dbroadcast <seconds>")
+    try:
+        seconds = int(m.command[1]) if len(m.command) > 1 else 0
+    except:
+        seconds = 0
 
-# ----------------- Handlers -----------------
-@dp.message_handler(content_types=["photo"])
-async def on_photo(m: types.Message):
-    file_id = m.photo[-1].file_id
-    await save_cover(m.chat.id, file_id)
-    await m.reply("✅ Cover thumbnail saved successfully!")
+    cursor.execute("SELECT user_id FROM users")
+    users = [u[0] for u in cursor.fetchall()]
+    sent = 0
+    for uid in users:
+        try:
+            msg = await m.reply_to_message.copy(uid)  # copies with all formatting, buttons, media
+            if seconds > 0:
+                asyncio.create_task(delete_after(msg, seconds))
+            sent += 1
+        except Exception:
+            pass
+    await m.reply(f"📢 Broadcast sent to {sent} users.")
 
+async def delete_after(msg: Message, seconds: int):
+    await asyncio.sleep(seconds)
+    try:
+        await msg.delete()
+    except:
+        pass
 
-@dp.message_handler(content_types=["video"])
-async def on_video(m: types.Message):
-    thumb_id = await get_cover(m.chat.id)
+# ========================
+# MEDIA HANDLERS
+# ========================
+@app.on_message(filters.photo)
+async def save_photo_cover(_, m: Message):
+    add_user(m.from_user.id)
+    save_cover(m.from_user.id, m.photo.file_id)
+    await m.reply("✅ Your new cover saved!")
+
+@app.on_message(filters.video)
+async def video_handler(_, m: Message):
+    add_user(m.from_user.id)
+    cover = get_cover(m.from_user.id)
     caption = m.caption or ""
     if is_admin(m.from_user.id):
-        caption = f"<b>{caption}</b>" if caption else "<b>Video</b>"
-    try:
-        copied = await m.copy_to(m.chat.id, caption=caption)
-        if thumb_id:
-            await bot.edit_message_media(
-                chat_id=m.chat.id,
-                message_id=copied.message_id,
-                media=InputMediaVideo(
-                    media=m.video.file_id,
-                    caption=caption,
-                    thumb=thumb_id
-                )
+        caption = f"**{caption}**"
+    if cover:
+        try:
+            await m.reply_video(
+                video=m.video.file_id,
+                caption=caption,
+                thumb=cover
             )
-    except Exception as e:
-        logger.error(f"Instant Cover Error: {e}")
-        await m.reply("⚠️ Failed to apply cover, but video was sent.")
+        except Exception as e:
+            await m.reply(f"⚠️ Failed to apply cover: {e}")
+    else:
+        await m.reply("❌ No cover set. Send an image first!")
 
+# ========================
+# START
+# ========================
+@app.on_message(filters.command("start"))
+async def start(_, m: Message):
+    add_user(m.from_user.id)
+    await m.reply("👋 Welcome! Send me a photo to set your own cover, then send a video to apply it.")
 
-# ----------------- Run -----------------
-if __name__ == "__main__":
-    executor.start_polling(dp, skip_updates=True)
+print("✅ Bot running...")
+app.run()
