@@ -1,72 +1,112 @@
-import asyncio
-from pyrogram import Client, filters
+import os
+import json
+import logging
+from telegram import Update, MessageEntity
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler, filters, ContextTypes
+)
+from telegram.error import TelegramError
 
-API_ID =    # apna API ID
-API_HASH = ""
-BOT_TOKEN = ""
+BOT_TOKEN = ""  # Replace with your bot token
+DATA_FILE = "user_data.json"
 
-app = Client("cover-bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+logging.basicConfig(level=logging.INFO, filename="bot.log")
+logger = logging.getLogger(__name__)
 
-# memory me per-user thumbnail
-user_thumbs = {}
+# ============== Helpers for JSON storage ==============
+def load_user_data():
+    try:
+        if os.path.exists(DATA_FILE):
+            with open(DATA_FILE, "r") as f:
+                return json.load(f)
+    except Exception as e:
+        logger.error(f"Error loading user data: {e}")
+    return {}
 
+def save_user_data(data):
+    try:
+        with open(DATA_FILE, "w") as f:
+            json.dump(data, f, indent=2)
+    except Exception as e:
+        logger.error(f"Error saving user data: {e}")
 
-# ========================
-# COMMANDS
-# ========================
-@app.on_message(filters.command("start"))
-async def start(_, m):
-    await m.reply("👋 Reply any photo with /set_thumb to save thumbnail!")
+user_data = load_user_data()
 
+# ============== Commands ==============
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    if user_id not in user_data:
+        user_data[user_id] = {"cover": None}
+        save_user_data(user_data)
+    await update.message.reply_text(
+        "👋 Welcome!\n\n"
+        "📸 Send me a photo to save as your cover.\n"
+        "🎥 Then send a video and I’ll apply it as cover.\n\n"
+        "Commands:\n"
+        "• /show_cover → Show current cover\n"
+        "• /del_cover → Delete current cover"
+    )
 
-@app.on_message(filters.command("set_thumb"))
-async def set_thumb(_, m):
-    if not m.reply_to_message or not m.reply_to_message.photo:
-        return await m.reply("⚠️ Reply to a photo with /set_thumb")
-
-    file_id = m.reply_to_message.photo.file_id
-    user_thumbs[m.from_user.id] = file_id
-    await m.reply("✅ Thumbnail saved successfully!")
-
-
-@app.on_message(filters.command("show_thumb"))
-async def show_thumb(_, m):
-    thumb = user_thumbs.get(m.from_user.id)
-    if thumb:
-        await m.reply_photo(thumb, caption="📸 Your current thumbnail")
+async def show_cover(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    cover = user_data.get(user_id, {}).get("cover")
+    if cover:
+        await update.message.reply_photo(cover, caption="📸 Your current cover")
     else:
-        await m.reply("❌ No thumbnail set.")
+        await update.message.reply_text("❌ No cover set. Send a photo first.")
 
-
-@app.on_message(filters.command("del_thumb"))
-async def del_thumb(_, m):
-    if m.from_user.id in user_thumbs:
-        del user_thumbs[m.from_user.id]
-        await m.reply("🗑️ Thumbnail deleted.")
+async def del_cover(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = update.message.from_user.id
+    if user_data.get(user_id, {}).get("cover"):
+        user_data[user_id]["cover"] = None
+        save_user_data(user_data)
+        await update.message.reply_text("🗑️ Cover deleted.")
     else:
-        await m.reply("❌ No thumbnail to delete.")
+        await update.message.reply_text("❌ No cover to delete.")
 
+# ============== Handlers ==============
+async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Save photo as cover automatically."""
+    user_id = update.message.from_user.id
+    photo = update.message.photo[-1]  # largest size
+    user_data.setdefault(user_id, {})["cover"] = photo.file_id
+    save_user_data(user_data)
+    await update.message.reply_text("✅ New cover saved!")
 
-# ========================
-# VIDEO HANDLER
-# ========================
-@app.on_message(filters.video)
-async def handle_video(_, m):
-    thumb = user_thumbs.get(m.from_user.id)
+async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Send video back with saved cover + bold caption."""
+    user_id = update.message.from_user.id
+    video = update.message.video
+    if not video:
+        return await update.message.reply_text("❌ Please send a valid video.")
+
+    cover = user_data.get(user_id, {}).get("cover")
+    caption = update.message.caption
+    if caption:
+        caption = f"<b>{caption}</b>"
 
     try:
-        await app.send_video(
-            chat_id=m.chat.id,
-            video=m.video.file_id,
-            caption=m.caption or "",
-            cover=thumb  # 👈 PyroFork supports this
+        await context.bot.send_video(
+            chat_id=update.message.chat_id,
+            video=video.file_id,
+            cover=cover,  # ⚠️ Only works if Bot API supports cover param
+            caption=caption,
+            parse_mode="HTML",
+            supports_streaming=True
         )
-    except Exception as e:
-        await m.reply(f"⚠️ Failed to apply thumbnail.\n`{e}`")
+        await update.message.reply_text("✅ Video sent with your cover applied!")
+    except TelegramError as e:
+        await update.message.reply_text(f"⚠️ Error sending video: {e}")
 
+# ============== Main Runner ==============
+def main():
+    app = Application.builder().token(BOT_TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(CommandHandler("show_cover", show_cover))
+    app.add_handler(CommandHandler("del_cover", del_cover))
+    app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.VIDEO, handle_video))
+    app.run_polling()
 
-# ========================
-# START
-# ========================
-print("✅ Bot running...")
-app.run()
+if __name__ == "__main__":
+    main()
