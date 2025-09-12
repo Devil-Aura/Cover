@@ -1,76 +1,77 @@
-import asyncio
-from pyrogram import Client, filters
-from pyrogram.types import Message
+import logging
+from aiogram import Bot, Dispatcher, executor, types
 
-# ========================
-# CONFIG
-# ========================
-API_ID =       # apna api_id dalo
-API_HASH = ""
-BOT_TOKEN = ""
+API_TOKEN = ""  # apna bot token yaha daalna
 
-app = Client("cover-bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+# Logging enable
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
-# In-memory storage (restart hone par reset hoga)
-user_covers = {}
+# Bot & Dispatcher
+bot = Bot(token=API_TOKEN)
+dp = Dispatcher(bot)
+
+# In-memory thumbnail storage (restart hone par reset)
+user_thumbs = {}
 
 
 # ========================
 # COMMANDS
 # ========================
-@app.on_message(filters.command("start"))
-async def start(_, message: Message):
-    await message.reply("👋 Send me a photo to set as your cover, then send a video!")
+@dp.message_handler(commands=["start"])
+async def cmd_start(message: types.Message):
+    await message.reply("👋 Reply any photo with /set_thumb to save thumbnail!")
 
-@app.on_message(filters.command("show_cover"))
-async def show_cover(_, message: Message):
-    cover = user_covers.get(message.from_user.id)
-    if cover:
-        await message.reply_photo(cover, caption="📸 Your Current Cover")
-    else:
-        await message.reply("❌ You don't have any cover set.")
 
-@app.on_message(filters.command("del_cover"))
-async def del_cover(_, message: Message):
-    if message.from_user.id in user_covers:
-        del user_covers[message.from_user.id]
-        await message.reply("🗑️ Your cover deleted.")
+@dp.message_handler(commands=["set_thumb"])
+async def cmd_set_thumb(message: types.Message):
+    if not message.reply_to_message or not message.reply_to_message.photo:
+        return await message.reply("⚠️ Reply to a photo with /set_thumb")
+
+    file_id = message.reply_to_message.photo[-1].file_id
+    user_thumbs[message.from_user.id] = file_id
+    await message.reply("✅ Thumbnail saved successfully!")
+
+
+@dp.message_handler(commands=["show_thumb"])
+async def cmd_show_thumb(message: types.Message):
+    thumb = user_thumbs.get(message.from_user.id)
+    if thumb:
+        await bot.send_photo(message.chat.id, thumb, caption="📸 Your current thumbnail")
     else:
-        await message.reply("❌ You don't have any cover to delete.")
+        await message.reply("❌ No thumbnail set.")
+
+
+@dp.message_handler(commands=["del_thumb"])
+async def cmd_del_thumb(message: types.Message):
+    if message.from_user.id in user_thumbs:
+        del user_thumbs[message.from_user.id]
+        await message.reply("🗑️ Thumbnail deleted.")
+    else:
+        await message.reply("❌ No thumbnail to delete.")
 
 
 # ========================
-# MEDIA HANDLERS
+# VIDEO HANDLER
 # ========================
-@app.on_message(filters.photo)
-async def save_cover(_, message: Message):
-    file_id = message.photo.file_id
-    user_covers[message.from_user.id] = file_id
-    await message.reply("✅ Your new cover saved!")
-
-
-@app.on_message(filters.video)
-async def apply_cover(_, message: Message):
-    cover = user_covers.get(message.from_user.id)
-    if not cover:
-        return await message.reply("❌ No cover set. Send an image first!")
-
-    video = message.video
-    caption = message.caption or ""
+@dp.message_handler(content_types=["video"])
+async def handle_video(message: types.Message):
+    thumb = user_thumbs.get(message.from_user.id)
 
     try:
-        await app.send_video(
+        await bot.send_video(
             chat_id=message.chat.id,
-            video=video.file_id,
-            caption=caption,
-            thumb=cover  # 👈 thumbnail apply here
+            video=message.video.file_id,
+            caption=message.caption or "",
+            thumb=thumb  # 👈 yaha thumbnail apply hoga
         )
     except Exception as e:
-        print(e)
-        await message.reply("⚠️ Failed to apply cover.")
+        logger.error(f"Video Thumbnail Error: {e}")
+        await message.reply("⚠️ Failed to apply thumbnail.")
 
 
 # ========================
 # START BOT
 # ========================
-app.run()
+if __name__ == "__main__":
+    executor.start_polling(dp, skip_updates=True)
