@@ -1,77 +1,72 @@
-import logging
-from aiogram import Bot, Dispatcher, executor, types
+import asyncio
+from pyrogram import Client, filters
 
-API_TOKEN = ""  # apna bot token yaha daalna
+API_ID =    # apna API ID
+API_HASH = ""
+BOT_TOKEN = ""
 
-# Logging enable
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+app = Client("cover-bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-# Bot & Dispatcher
-bot = Bot(token=API_TOKEN)
-dp = Dispatcher(bot)
-
-# In-memory thumbnail storage (restart hone par reset)
+# memory me per-user thumbnail
 user_thumbs = {}
 
 
 # ========================
 # COMMANDS
 # ========================
-@dp.message_handler(commands=["start"])
-async def cmd_start(message: types.Message):
-    await message.reply("👋 Reply any photo with /set_thumb to save thumbnail!")
+@app.on_message(filters.command("start"))
+async def start(_, m):
+    await m.reply("👋 Reply any photo with /set_thumb to save thumbnail!")
 
 
-@dp.message_handler(commands=["set_thumb"])
-async def cmd_set_thumb(message: types.Message):
-    if not message.reply_to_message or not message.reply_to_message.photo:
-        return await message.reply("⚠️ Reply to a photo with /set_thumb")
+@app.on_message(filters.command("set_thumb"))
+async def set_thumb(_, m):
+    if not m.reply_to_message or not m.reply_to_message.photo:
+        return await m.reply("⚠️ Reply to a photo with /set_thumb")
 
-    file_id = message.reply_to_message.photo[-1].file_id
-    user_thumbs[message.from_user.id] = file_id
-    await message.reply("✅ Thumbnail saved successfully!")
+    file_id = m.reply_to_message.photo.file_id
+    user_thumbs[m.from_user.id] = file_id
+    await m.reply("✅ Thumbnail saved successfully!")
 
 
-@dp.message_handler(commands=["show_thumb"])
-async def cmd_show_thumb(message: types.Message):
-    thumb = user_thumbs.get(message.from_user.id)
+@app.on_message(filters.command("show_thumb"))
+async def show_thumb(_, m):
+    thumb = user_thumbs.get(m.from_user.id)
     if thumb:
-        await bot.send_photo(message.chat.id, thumb, caption="📸 Your current thumbnail")
+        await m.reply_photo(thumb, caption="📸 Your current thumbnail")
     else:
-        await message.reply("❌ No thumbnail set.")
+        await m.reply("❌ No thumbnail set.")
 
 
-@dp.message_handler(commands=["del_thumb"])
-async def cmd_del_thumb(message: types.Message):
-    if message.from_user.id in user_thumbs:
-        del user_thumbs[message.from_user.id]
-        await message.reply("🗑️ Thumbnail deleted.")
+@app.on_message(filters.command("del_thumb"))
+async def del_thumb(_, m):
+    if m.from_user.id in user_thumbs:
+        del user_thumbs[m.from_user.id]
+        await m.reply("🗑️ Thumbnail deleted.")
     else:
-        await message.reply("❌ No thumbnail to delete.")
+        await m.reply("❌ No thumbnail to delete.")
 
 
 # ========================
 # VIDEO HANDLER
 # ========================
-@dp.message_handler(content_types=["video"])
-async def handle_video(message: types.Message):
-    thumb = user_thumbs.get(message.from_user.id)
+@app.on_message(filters.video)
+async def handle_video(_, m):
+    thumb = user_thumbs.get(m.from_user.id)
 
     try:
-        await bot.send_video(
-            chat_id=message.chat.id,
-            video=message.video.file_id,
-            caption=message.caption or "",
-            thumb=thumb  # 👈 yaha thumbnail apply hoga
+        await app.send_video(
+            chat_id=m.chat.id,
+            video=m.video.file_id,
+            caption=m.caption or "",
+            cover=thumb  # 👈 PyroFork supports this
         )
     except Exception as e:
-        logger.error(f"Video Thumbnail Error: {e}")
-        await message.reply("⚠️ Failed to apply thumbnail.")
+        await m.reply(f"⚠️ Failed to apply thumbnail.\n`{e}`")
 
 
 # ========================
-# START BOT
+# START
 # ========================
-if __name__ == "__main__":
-    executor.start_polling(dp, skip_updates=True)
+print("✅ Bot running...")
+app.run()
