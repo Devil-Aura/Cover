@@ -1,66 +1,76 @@
-const { Telegraf } = require("telegraf");
+import asyncio
+from pyrogram import Client, filters
+from pyrogram.types import Message
 
-// ========================
-// CONFIG
-// ========================
-const BOT_TOKEN = "";
-const bot = new Telegraf(BOT_TOKEN);
+# ========================
+# CONFIG
+# ========================
+API_ID =       # apna api_id dalo
+API_HASH = ""
+BOT_TOKEN = ""
 
-// In-memory database (use Mongo/SQLite for real app)
-const userCovers = {};
+app = Client("cover-bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
 
-// ========================
-// COMMANDS
-// ========================
-bot.start((ctx) => ctx.reply("👋 Send me a photo to set as your cover, then send a video!"));
+# In-memory storage (restart hone par reset hoga)
+user_covers = {}
 
-bot.command("show_cover", (ctx) => {
-  const cover = userCovers[ctx.from.id];
-  if (cover) {
-    ctx.replyWithPhoto(cover, { caption: "📸 Your Current Cover" });
-  } else {
-    ctx.reply("❌ You don't have any cover set.");
-  }
-});
 
-bot.command("del_cover", (ctx) => {
-  delete userCovers[ctx.from.id];
-  ctx.reply("🗑️ Your cover deleted.");
-});
+# ========================
+# COMMANDS
+# ========================
+@app.on_message(filters.command("start"))
+async def start(_, message: Message):
+    await message.reply("👋 Send me a photo to set as your cover, then send a video!")
 
-// ========================
-// MEDIA HANDLERS
-// ========================
-bot.on("photo", async (ctx) => {
-  const photos = ctx.message.photo;
-  const fileId = photos[photos.length - 1].file_id; // best quality
-  userCovers[ctx.from.id] = fileId;
-  await ctx.reply("✅ Your new cover saved!");
-});
+@app.on_message(filters.command("show_cover"))
+async def show_cover(_, message: Message):
+    cover = user_covers.get(message.from_user.id)
+    if cover:
+        await message.reply_photo(cover, caption="📸 Your Current Cover")
+    else:
+        await message.reply("❌ You don't have any cover set.")
 
-bot.on("video", async (ctx) => {
-  const cover = userCovers[ctx.from.id];
-  if (!cover) return ctx.reply("❌ No cover set. Send an image first!");
+@app.on_message(filters.command("del_cover"))
+async def del_cover(_, message: Message):
+    if message.from_user.id in user_covers:
+        del user_covers[message.from_user.id]
+        await message.reply("🗑️ Your cover deleted.")
+    else:
+        await message.reply("❌ You don't have any cover to delete.")
 
-  const video = ctx.message.video;
-  const caption = ctx.message.caption || "";
 
-  try {
-    await ctx.telegram.sendVideo(ctx.chat.id, video.file_id, {
-      caption: caption,
-      thumb: cover, // 👈 thumbnail apply here
-    });
-  } catch (e) {
-    console.error(e);
-    await ctx.reply("⚠️ Failed to apply cover.");
-  }
-});
+# ========================
+# MEDIA HANDLERS
+# ========================
+@app.on_message(filters.photo)
+async def save_cover(_, message: Message):
+    file_id = message.photo.file_id
+    user_covers[message.from_user.id] = file_id
+    await message.reply("✅ Your new cover saved!")
 
-// ========================
-// START BOT
-// ========================
-bot.launch().then(() => console.log("✅ Bot running..."));
 
-// Enable graceful stop
-process.once("SIGINT", () => bot.stop("SIGINT"));
-process.once("SIGTERM", () => bot.stop("SIGTERM"));
+@app.on_message(filters.video)
+async def apply_cover(_, message: Message):
+    cover = user_covers.get(message.from_user.id)
+    if not cover:
+        return await message.reply("❌ No cover set. Send an image first!")
+
+    video = message.video
+    caption = message.caption or ""
+
+    try:
+        await app.send_video(
+            chat_id=message.chat.id,
+            video=video.file_id,
+            caption=caption,
+            thumb=cover  # 👈 thumbnail apply here
+        )
+    except Exception as e:
+        print(e)
+        await message.reply("⚠️ Failed to apply cover.")
+
+
+# ========================
+# START BOT
+# ========================
+app.run()
