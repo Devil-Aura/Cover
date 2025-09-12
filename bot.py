@@ -1,161 +1,66 @@
-import os
-import sys
-import time
-import sqlite3
-from pyrogram import Client, filters
-from pyrogram.types import Message
+const { Telegraf } = require("telegraf");
 
-# ========================
-# CONFIG
-# ========================
-API_ID =       # your api_id
-API_HASH = ""
-BOT_TOKEN = ""
-OWNER_ID =  # your telegram user id
+// ========================
+// CONFIG
+// ========================
+const BOT_TOKEN = "";
+const bot = new Telegraf(BOT_TOKEN);
 
-app = Client("cover-bot", api_id=API_ID, api_hash=API_HASH, bot_token=BOT_TOKEN)
+// In-memory database (use Mongo/SQLite for real app)
+const userCovers = {};
 
-# ========================
-# DATABASE
-# ========================
-conn = sqlite3.connect("bot.db")
-cursor = conn.cursor()
+// ========================
+// COMMANDS
+// ========================
+bot.start((ctx) => ctx.reply("👋 Send me a photo to set as your cover, then send a video!"));
 
-cursor.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY)")
-cursor.execute("CREATE TABLE IF NOT EXISTS admins (user_id INTEGER PRIMARY KEY)")
-# per-user cover
-cursor.execute("CREATE TABLE IF NOT EXISTS covers (user_id INTEGER PRIMARY KEY, file_id TEXT)")
-conn.commit()
+bot.command("show_cover", (ctx) => {
+  const cover = userCovers[ctx.from.id];
+  if (cover) {
+    ctx.replyWithPhoto(cover, { caption: "📸 Your Current Cover" });
+  } else {
+    ctx.reply("❌ You don't have any cover set.");
+  }
+});
 
-# ========================
-# HELPERS
-# ========================
-def add_user(user_id):
-    cursor.execute("INSERT OR IGNORE INTO users (user_id) VALUES (?)", (user_id,))
-    conn.commit()
+bot.command("del_cover", (ctx) => {
+  delete userCovers[ctx.from.id];
+  ctx.reply("🗑️ Your cover deleted.");
+});
 
-def is_admin(user_id):
-    if user_id == OWNER_ID:
-        return True
-    cursor.execute("SELECT user_id FROM admins WHERE user_id=?", (user_id,))
-    return cursor.fetchone() is not None
+// ========================
+// MEDIA HANDLERS
+// ========================
+bot.on("photo", async (ctx) => {
+  const photos = ctx.message.photo;
+  const fileId = photos[photos.length - 1].file_id; // best quality
+  userCovers[ctx.from.id] = fileId;
+  await ctx.reply("✅ Your new cover saved!");
+});
 
-def save_cover(user_id, file_id):
-    cursor.execute("REPLACE INTO covers (user_id, file_id) VALUES (?, ?)", (user_id, file_id))
-    conn.commit()
+bot.on("video", async (ctx) => {
+  const cover = userCovers[ctx.from.id];
+  if (!cover) return ctx.reply("❌ No cover set. Send an image first!");
 
-def get_cover(user_id):
-    cursor.execute("SELECT file_id FROM covers WHERE user_id=?", (user_id,))
-    row = cursor.fetchone()
-    return row[0] if row else None
+  const video = ctx.message.video;
+  const caption = ctx.message.caption || "";
 
-def del_cover(user_id):
-    cursor.execute("DELETE FROM covers WHERE user_id=?", (user_id,))
-    conn.commit()
+  try {
+    await ctx.telegram.sendVideo(ctx.chat.id, video.file_id, {
+      caption: caption,
+      thumb: cover, // 👈 thumbnail apply here
+    });
+  } catch (e) {
+    console.error(e);
+    await ctx.reply("⚠️ Failed to apply cover.");
+  }
+});
 
-# ========================
-# COMMANDS
-# ========================
-@app.on_message(filters.command("ping"))
-async def ping(_, m: Message):
-    start = time.time()
-    reply = await m.reply("Pinging...")
-    end = time.time()
-    await reply.edit_text(f"🏓 Pong! `{round((end-start)*1000)} ms`")
+// ========================
+// START BOT
+// ========================
+bot.launch().then(() => console.log("✅ Bot running..."));
 
-@app.on_message(filters.command("restart") & filters.user(OWNER_ID))
-async def restart(_, m: Message):
-    await m.reply("♻️ Restarting...")
-    os.execv(sys.executable, ['python'] + sys.argv)
-
-@app.on_message(filters.command("show_cover"))
-async def show_cover(_, m: Message):
-    cover = get_cover(m.from_user.id)
-    if cover:
-        await m.reply_photo(cover, caption="📸 Your Current Cover")
-    else:
-        await m.reply("❌ You don't have any cover set.")
-
-@app.on_message(filters.command("del_cover"))
-async def delete_cover(_, m: Message):
-    del_cover(m.from_user.id)
-    await m.reply("🗑️ Your cover deleted.")
-
-@app.on_message(filters.command("users"))
-async def show_users(_, m: Message):
-    cursor.execute("SELECT COUNT(*) FROM users")
-    count = cursor.fetchone()[0]
-    await m.reply(f"👥 Total users: `{count}`")
-
-@app.on_message(filters.command("stats"))
-async def stats(_, m: Message):
-    cursor.execute("SELECT COUNT(*) FROM users")
-    ucount = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM admins")
-    acount = cursor.fetchone()[0]
-    await m.reply(f"📊 Stats:\n👥 Users: `{ucount}`\n👮 Admins: `{acount}`")
-
-@app.on_message(filters.command("addadmin") & filters.user(OWNER_ID))
-async def add_admin(_, m: Message):
-    if len(m.command) < 2:
-        return await m.reply("Usage: /addadmin user_id")
-    uid = int(m.command[1])
-    cursor.execute("INSERT OR IGNORE INTO admins (user_id) VALUES (?)", (uid,))
-    conn.commit()
-    await m.reply(f"✅ User `{uid}` added as admin.")
-
-@app.on_message(filters.command("removeadmin") & filters.user(OWNER_ID))
-async def remove_admin(_, m: Message):
-    if len(m.command) < 2:
-        return await m.reply("Usage: /removeadmin user_id")
-    uid = int(m.command[1])
-    cursor.execute("DELETE FROM admins WHERE user_id=?", (uid,))
-    conn.commit()
-    await m.reply(f"🗑️ User `{uid}` removed from admins.")
-
-@app.on_message(filters.command("showadmin"))
-async def show_admins(_, m: Message):
-    cursor.execute("SELECT user_id FROM admins")
-    rows = cursor.fetchall()
-    text = "👮 Admins:\n"
-    text += "\n".join([f"- `{r[0]}`" for r in rows]) if rows else "No admins."
-    await m.reply(text)
-
-# ========================
-# MEDIA HANDLERS
-# ========================
-@app.on_message(filters.photo)
-async def save_photo_cover(_, m: Message):
-    add_user(m.from_user.id)
-    save_cover(m.from_user.id, m.photo.file_id)
-    await m.reply("✅ Your new cover saved!")
-
-@app.on_message(filters.video)
-async def video_handler(_, m: Message):
-    add_user(m.from_user.id)
-    cover = get_cover(m.from_user.id)
-    caption = m.caption or ""
-    if is_admin(m.from_user.id):
-        caption = f"**{caption}**"
-    if cover:
-        try:
-            await m.reply_video(
-                video=m.video.file_id,
-                caption=caption,
-                thumb=cover  # 👈 cover apply ho raha hai
-            )
-        except Exception as e:
-            await m.reply(f"⚠️ Failed to apply cover: {e}")
-    else:
-        await m.reply("❌ No cover set. Send an image first!")
-
-# ========================
-# START
-# ========================
-@app.on_message(filters.command("start"))
-async def start(_, m: Message):
-    add_user(m.from_user.id)
-    await m.reply("👋 Welcome! Send me a photo to set your own cover, then send a video to apply it.")
-
-print("✅ Bot running...")
-app.run()
+// Enable graceful stop
+process.once("SIGINT", () => bot.stop("SIGINT"));
+process.once("SIGTERM", () => bot.stop("SIGTERM"));
