@@ -1,6 +1,5 @@
 import os
 import sys
-import asyncio
 import time
 import sqlite3
 from pyrogram import Client, filters
@@ -24,7 +23,7 @@ cursor = conn.cursor()
 
 cursor.execute("CREATE TABLE IF NOT EXISTS users (user_id INTEGER PRIMARY KEY)")
 cursor.execute("CREATE TABLE IF NOT EXISTS admins (user_id INTEGER PRIMARY KEY)")
-# Now per-user cover (instead of global)
+# per-user cover
 cursor.execute("CREATE TABLE IF NOT EXISTS covers (user_id INTEGER PRIMARY KEY, file_id TEXT)")
 conn.commit()
 
@@ -122,35 +121,6 @@ async def show_admins(_, m: Message):
     text += "\n".join([f"- `{r[0]}`" for r in rows]) if rows else "No admins."
     await m.reply(text)
 
-@app.on_message(filters.command("dbroadcast") & filters.user([OWNER_ID]))
-async def dbroadcast(_, m: Message):
-    if not m.reply_to_message:
-        return await m.reply("Reply to a message with /dbroadcast <seconds>")
-    try:
-        seconds = int(m.command[1]) if len(m.command) > 1 else 0
-    except:
-        seconds = 0
-
-    cursor.execute("SELECT user_id FROM users")
-    users = [u[0] for u in cursor.fetchall()]
-    sent = 0
-    for uid in users:
-        try:
-            msg = await m.reply_to_message.copy(uid)  # copies with all formatting, buttons, media
-            if seconds > 0:
-                asyncio.create_task(delete_after(msg, seconds))
-            sent += 1
-        except Exception:
-            pass
-    await m.reply(f"📢 Broadcast sent to {sent} users.")
-
-async def delete_after(msg: Message, seconds: int):
-    await asyncio.sleep(seconds)
-    try:
-        await msg.delete()
-    except:
-        pass
-
 # ========================
 # MEDIA HANDLERS
 # ========================
@@ -172,7 +142,7 @@ async def video_handler(_, m: Message):
             await m.reply_video(
                 video=m.video.file_id,
                 caption=caption,
-                thumb=cover
+                thumb=cover  # 👈 cover apply ho raha hai
             )
         except Exception as e:
             await m.reply(f"⚠️ Failed to apply cover: {e}")
