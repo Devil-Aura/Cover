@@ -58,8 +58,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_user_data(user_data)
     
     welcome_text = (
-        "🎬 <b>Video Cover Bot</b>\n\n"
-        "✨ <b>Free • Fast • Reliable</b>\n\n"
+        "🎬 <b>Video Cover/Thumbnail Bot</b>\n\n"
+        "- Add a custom cover/thumbnail to your videos instantly!\n\n"
         "📸 <b>How to use:</b>\n"
         "• Send a photo - it will be saved as thumbnail\n"
         "• Send any video - thumbnail will be added automatically\n"
@@ -68,7 +68,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /mythumb - See your saved thumbnail\n"
         "• /delthumb - Remove your thumbnail\n"
         "• /help - Get help guide\n\n"
-        "⚡ <b>Powered by:</b> @World_Fastest_Bots\n\n"
+        "⚡ <b>Powered by:</b>\n @World_Fastest_Bots\n\n"
         "💬 <b>Need help?</b> Feel free to contact us!"
     )
     
@@ -244,8 +244,7 @@ async def delete_thumbnail(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
-        "🎬 <b>Video Cover Bot - Help Guide</b>\n\n"
-        "✨ <b>Free • Fast • Reliable</b>\n\n"
+        "🎬 <b>Video Cover/Thumbnail Bot - Help Guide</b>\n\n"
         "📖 <b>How to use this bot:</b>\n"
         "1. <b>Send a photo</b> - It will be saved as your thumbnail\n"
         "2. <b>Send a video</b> - The thumbnail will be added automatically\n"
@@ -259,7 +258,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• Use clear photos for best results\n"
         "• Thumbnail works for all videos\n"
         "• No need to resend photos\n\n"
-        "⚡ <b>Powered by:</b> @World_Fastest_Bots\n\n"
+        "⚡ <b>Powered by:</b>\n @World_Fastest_Bots\n\n"
         "💬 <b>Need help or have feedback?</b> Feel free to reach us!"
     )
     
